@@ -1,10 +1,9 @@
-# My machine-learning exercises portfolio 
+# Hi there, in this repo you can find ML projects I worked with:
 
-Supervised learning:
- 1. [Logistic Regression](https://github.com/georgepachitariu/machine-learning-portfolio/blob/master/Regression/Leaf%20classification%20-%20Regression.ipynb)
- 2. [Random Forests](https://github.com/georgepachitariu/machine-learning-portfolio/blob/master/Random-forests/Titanic%20-%20Random%20Forests.ipynb)
- 3. [Neural Network](https://github.com/georgepachitariu/machine-learning-portfolio/blob/master/Neural%20Network/Leaf%20classification%20-%20Neural%20Network.ipynb)
- 
-Unsupervised learning:
- 2. [KMeans](https://github.com/georgepachitariu/machine-learning-portfolio/blob/master/KMeans%20Classification/Leaf%20classification.ipynb)
- 
+1. I implemented AlexNet using TensorFlow and I benchmarked my implementation against the results in the AlexNet paper on cifar10 dataset and a subset of ImageNet (10 dog breeds).
+
+2. I implemented the Region Proposal Network from Faster R-CNN (Object detection) using Tensorflow. The project includes preprocessing of the images to create the object detection features. In the model I used pre trained convolutional layers and transfer learning. I benchmarked my results against the results from the Faster R-CNN paper.
+
+3. Practice with Kaggle datasets.
+
+4. Other: Scratchpads made by following online tutorials.
