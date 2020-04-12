@@ -18,5 +18,5 @@ WORKDIR /home/gpachitariu
 CMD [ "jupyter", "notebook", "--ip", "0.0.0.0", \
       "--NotebookApp.token=''", "--NotebookApp.password=''" ]
 
-# docker run -u $(id -u):$(id -g) -p 8888:8888
-#   -v /home/gpachitariu/git:/home/gpachitariu/git --gpus all -it george_docker:1.1
+# docker run -p 8888:8888 -v /home/gpachitariu/git:/home/gpachitariu/git
+#    --gpus all -it george_docker:1.1
