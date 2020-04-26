@@ -8,14 +8,24 @@ class Data:
     def load() -> (tf.data.Dataset, tf.data.Dataset):
         train_ds, validation_ds = tfds.load(name="imagenet2012", split=['train', 'validation'],
                                             data_dir='/home/gpachitariu/HDD/data')
+        
+        Data.test_assumptions_of_the_input(train_ds)
+
         return train_ds, validation_ds
-
-      
-
+    
+    # The ML algorithm has a few assumptions of the input. We test the assumptions on the first example.
+    # If the input data doesn't follow the assumptions training, testing & predicting will fail because 
+    # the algorithm is "calibrated" the wrong way.
     @staticmethod
-    def build_new_sample() -> (tf.data.Dataset):
-        ds, _ = Data.load()
-        return ds.take(1)
+    def test_assumptions_of_the_input(train_ds):
+        for d in train_ds.take(1):
+            image = d['image'].numpy()
+            # The image has 3 dimensions (height, width, color_channels). Also color_channels=3
+            assert len(image.shape) == 3 and image.shape[2] == 3
+            # The range of values for pixels are [0, 255]
+            assert image.min() == 0
+            assert image.max() == 255
+
 
 
 class Preprocessing:
@@ -28,7 +38,7 @@ class Preprocessing:
     #train_image_count = tf.data.experimental.cardinality(train_ds).numpy()
     #STEPS_PER_EPOCH = np.ceil(train_image_count / BATCH_SIZE)
 
-
+    @staticmethod
     def _split_dict(t: tf.Tensor) -> (tf.Tensor, tf.Tensor):
         return t['image'], t['label']
 
@@ -52,7 +62,7 @@ class Preprocessing:
 
         crop_size = (tf.random.uniform([1])[0] * 0.25 + 0.75) * Preprocessing.IMG_SIZE
         # zoom in & out. max(zoom_out)=original size
-        # t['image'] = tf.image.random_crop(t['image'], size = (crop_size, crop_size))
+        # image = tf.image.random_crop(image, size = (crop_size, crop_size))
         image = tf.image.resize(image, size=tf.constant((224, 224)))
 
         image = tf.image.random_flip_left_right(image)
@@ -145,7 +155,9 @@ class Model:
         return model
 
 def main():
-    train_sample = Data.build_new_sample()
+    train_sample, _ = Data.load()
+    train_sample = train_sample.take(1)
+
     train_sample_gen = Preprocessing.create_generator(train_sample, for_training=True)
     model = Model.build()
 
