@@ -1,7 +1,9 @@
 import tensorflow as tf
+import tensorflow_datasets as tfds
 import unittest
-import training
 import numpy as np
+from contextlib import contextmanager
+import alexnet
 
 
 # In this script I test that the code works as expected.
@@ -10,30 +12,48 @@ my_devices = tf.config.experimental.list_physical_devices(device_type='CPU')
 tf.config.experimental.set_visible_devices(devices= my_devices, device_type='CPU')
 
 
-# Create Tensor from unit-test image
-def setup_dataset() -> tf.data.Dataset:
-    ds = tf.data.Dataset.list_files('test_images/*')
-    return ds.map(lambda t : {'image': t, 'label':'wolf'})
-    return ds.map(process_path)
+def create_square(size = 224):
+    square = np.zeros(shape=(size, size, 3), dtype=np.uint8)
+    for i in range(int(size * 1/4), int(size * 3/4)):
+        for j in range(int(size * 1/4), int(size * 3/4)):
+            square[i, j, :] = 255
+    return square
+
+def create_circle(size = 224):
+    # circle formula: (x - a)**2 + (y - b)**2 = r**2
+    circle = np.zeros(shape=(size, size, 3), dtype=np.uint8)
+    center = size/2
+    r = size/2
+    for i in range(circle.shape[0]):
+        for j in range(circle.shape[1]):
+            if (i - center)**2 + (j - center)**2 < r**2 :
+                circle[i, j, :] = 255
+    return circle
+
+def as_dataset(self, *args, **kwargs):
+    return tf.data.Dataset.from_tensor_slices(
+        { 'image': [create_square(), create_circle()],
+         'label': [0, 1]}
+    ) 
+
 
 class TrainingTests(unittest.TestCase):
 
-    def test_prepare(self):
-        # assert that, afger prepare, the images have the right size
-        # and same value range
-        ins = setup_dataset()
-        
-        for d_in in ins:
-            d_out = training._normalize(d_in)
-            i = d_out['image'].numpy()
-            assert i.shape == (training.IMG_SIZE, training.IMG_SIZE)
-            assert np.all(-0.5 <= i) and np.all(i <= 0.5)
+    @contextmanager
+    def test_with_basic_dataset(self):
+        # The 'with ... :' makes tfds.load() to load my above mock dataset instead of imagenet2012.
+        # Both train and validation split will contain all the elements.
+        with tfds.testing.mock_data(as_dataset_fn=as_dataset):
+            history = alexnet.run(
+                #len(train_data) >= steps_per_epoch * epochs * batch_size
+                number_categories=2, dataset_repeat = 750, steps_per_epoch=5, epochs=30, batch_size=10, sample_fraction=1,
+                # The learning rate needs to be very small, I think it's because of the small number of training data
+                learning_rate=0.00001
+                )
+            print()
 
-def test_print():
-    list_ds = setup_dataset()
-    for f in list_ds.take(1):
-        print(f['image'].numpy())
-        print(f['label'].numpy())
+            assert history.history['accuracy'][-1] == 1.0 
+
 
 if __name__ == '__main__':
     unittest.main()
