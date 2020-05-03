@@ -61,7 +61,7 @@ class Preprocessing:
         return image, label
 
     @staticmethod
-    def create_generator(ds, for_training, batch_size = 128, dataset_repeat = 5):
+    def create_generator(ds, for_training, batch_size = 128):
         auto=tf.data.experimental.AUTOTUNE
 
         ds = ds.map(Preprocessing._split_dict, num_parallel_calls=auto)
@@ -70,7 +70,7 @@ class Preprocessing:
         ds = ds.shuffle(buffer_size=Preprocessing.BUFFER_SIZE)
 
         if for_training:
-            ds = ds.repeat(count=dataset_repeat)
+            ds = ds.repeat() # repeat forever
             ds = ds.map(Preprocessing._augment, num_parallel_calls=auto)
         ds = ds.batch(batch_size)
 
@@ -82,7 +82,7 @@ class Preprocessing:
 class Model:
 
     @staticmethod
-    def build(number_categories):
+    def build():
 
         # Following the paper: "We initialized the weights in each layer from a zero-mean Gaussian distribution with standard deviation 0.01."
         point_zero_one = tf.compat.v1.keras.initializers.RandomNormal(mean=0.0, stddev=0.01)
@@ -91,7 +91,7 @@ class Model:
         # as well as in the fully-connected hidden layers, with the constant 1. This initialization accelerates
         # the early stages of learning by providing the ReLUs with positive inputs. We initialized the neuron
         # biases in the remaining layers with the constant 0."
-        one = tf.compat.v2.constant_initializer(value=1)
+        one = tf.compat.v2.constant_initializer(value=0.1) # If I leave this to 1 the losse in the beginning will be huge.
         zero = tf.compat.v2.constant_initializer(value=0)
 
 
@@ -129,8 +129,8 @@ class Model:
 
             keras.layers.Dense(4096, activation='relu', bias_initializer=zero, kernel_initializer=point_zero_one),
 
-            keras.layers.Dense(number_categories, activation='softmax', bias_initializer='zeros',
-                            kernel_initializer=point_zero_one) 
+            # 1000 categories
+            keras.layers.Dense(1000, activation='softmax', bias_initializer=zero, kernel_initializer=point_zero_one) 
         ])
 
         
@@ -146,7 +146,12 @@ class Model:
         
 
         model.compile(optimizer=tf.keras.optimizers.SGD(learning_rate=0.001, momentum=0.9),  # learning_rate=learning_rate_fn
-                    loss='categorical_crossentropy', metrics=['accuracy', tf.keras.metrics.TopKCategoricalAccuracy(k=3)])
+                    loss='categorical_crossentropy', 
+                    metrics=[ # I don't know why but using 'accuracy' doesn't work
+                             #tf.keras.metrics.TopKCategoricalAccuracy(k=1), 
+                             #tf.keras.metrics.TopKCategoricalAccuracy(k=3),
+                             tf.keras.metrics.TopKCategoricalAccuracy(k=10)
+                             ])
 
         return model
 
@@ -168,7 +173,7 @@ def configure_gpu():
             # Memory growth must be set before GPUs have been initialized
             print(e)
 
-def run(number_categories=1000, dataset_repeat=5,  sample_fraction=1):
+def run(dataset_repeat=5,  sample_fraction=1):
     configure_gpu()
 
     # http://www.image-net.org/challenges/LSVRC/2012/
@@ -188,21 +193,23 @@ def run(number_categories=1000, dataset_repeat=5,  sample_fraction=1):
     sample_validation_data = validation_data.take(validation_sample_size)
     
     print("Creating the generators")
-    train_sample_gen = Preprocessing.create_generator(sample_train_data, for_training=True, 
-                                                      batch_size = 32,
-                                                      dataset_repeat=dataset_repeat)
+    batch_size = 128
+    train_sample_gen = Preprocessing.create_generator(sample_train_data, for_training=True, batch_size = batch_size)
     validation_sample_gen = Preprocessing.create_generator(sample_validation_data, for_training=False)
 
-    model = Model.build(number_categories)
+    model = Model.build()
     print("Starting the training")
     history = model.fit( x=train_sample_gen,
                          validation_data = validation_sample_gen,
                          # An epoch is an iteration over the entire x and y data provided.
-                         epochs = 10,
+                         epochs = dataset_repeat,
                          # Total number of steps (batches of samples) before declaring one epoch finished and starting the next epoch
-                         steps_per_epoch = 5
+                         steps_per_epoch = train_sample_size / batch_size
                        )
     return history
 
 if __name__ == '__main__':
     run(dataset_repeat=5, sample_fraction=0.1)
+
+# Run log
+# 3040/9375 [========>.....................] - ETA: 33:06 - loss: 3 652 687.3218 - top_k_categorical_accuracy: 0.9993Traceback (most recent call last):
