@@ -173,43 +173,56 @@ def configure_gpu():
             # Memory growth must be set before GPUs have been initialized
             print(e)
 
-def run(dataset_repeat=5,  sample_fraction=1):
-    configure_gpu()
+class Alexnet:
 
-    # http://www.image-net.org/challenges/LSVRC/2012/
-    # number_categories = 1000 
-    # 1.2 million train images
-    # 150 000 validation images
-    len_train_data = 1.2 * 1000 * 1000 # The alternative of counting this would take ages: len(list(train_data))))
-    len_validation_data = 150 * 1000
+    def __init__(self):
+        configure_gpu()
 
-    print("Loading input dataset")
-    train_data, validation_data = Data.load()
+    def load_data(self, sample_fraction=1):
+        # http://www.image-net.org/challenges/LSVRC/2012/
+        # number_categories = 1000 
+        # 1.2 million train images
+        # 150 000 validation images
+        total_train_data_size = 1.2 * 1000 * 1000 # The alternative of counting this would take ages: len(list(train_data))))
+        total_validation_data_size = 150 * 1000
 
-    train_sample_size = int(sample_fraction * len_train_data)
-    validation_sample_size = int(sample_fraction * len_validation_data)
-    print(f"Number of examples in the Train sample is {train_sample_size} and in the Validation sample is {validation_sample_size}")    
-    sample_train_data = train_data.take(train_sample_size)
-    sample_validation_data = validation_data.take(validation_sample_size)
+        print("Loading input dataset")
+        train_data, validation_data = Data.load()
+
+        self.train_data_size = int(sample_fraction * total_train_data_size)
+        self.validation_data_size = int(sample_fraction * total_validation_data_size)
+        print(f"A fraction of {sample_fraction} was selected from the total data")
+        print(f"Number of examples in the Train dataset is {self.train_data_size} and in the Validation dataset is {self.validation_data_size}")    
+
+        self.train_data = train_data.take(self.train_data_size)
+        self.validation_data = validation_data.take(self.validation_data_size)
+
+    def create_generator(self):
+        print("Creating the generators")
+        self.batch_size = 128
+        self.train_sample_gen = Preprocessing.create_generator(self.train_data, for_training=True, batch_size = self.batch_size)
+        self.validation_sample_gen = Preprocessing.create_generator(self.validation_data, for_training=False)
     
-    print("Creating the generators")
-    batch_size = 128
-    train_sample_gen = Preprocessing.create_generator(sample_train_data, for_training=True, batch_size = batch_size)
-    validation_sample_gen = Preprocessing.create_generator(sample_validation_data, for_training=False)
+    def build_model(self):
+        self.model = Model.build()
 
-    model = Model.build()
-    print("Starting the training")
-    history = model.fit( x=train_sample_gen,
-                         validation_data = validation_sample_gen,
-                         # An epoch is an iteration over the entire x and y data provided.
-                         epochs = dataset_repeat,
-                         # Total number of steps (batches of samples) before declaring one epoch finished and starting the next epoch
-                         steps_per_epoch = train_sample_size / batch_size
-                       )
-    return history
+    def train(self, dataset_iterations=5):
+        print("Starting the training")
+        self.history = self.model.fit( x=self.train_sample_gen,
+                            validation_data = self.validation_sample_gen,
+                            # An epoch is an iteration over the entire x and y data provided.
+                            epochs = dataset_iterations,
+                            # Total number of steps (batches of samples) before declaring one epoch finished and starting the next epoch
+                            steps_per_epoch = self.train_sample_size / batch_size
+                            )
+
 
 if __name__ == '__main__':
-    run(dataset_repeat=5, sample_fraction=0.1)
+    network = Alexnet()
+    network.load_data(sample_fraction=0.1)
+    network.create_generator()
+    network.train(dataset_iterations=5)
 
 # Run log
 # 3040/9375 [========>.....................] - ETA: 33:06 - loss: 3 652 687.3218 - top_k_categorical_accuracy: 0.9993Traceback (most recent call last):
+# 5971/9375 [==================>...........] - ETA: 17:33 - loss: 3 603 590.7420 - top_k_categorical_accuracy: 0.5951Traceback (most recent call last):
