@@ -29,8 +29,6 @@ class Data:
 
 class Preprocessing:
     # Resize: In the paper for images they kept the ratio, in mine the images were made square
-
-    IMG_SIZE = 224
     BUFFER_SIZE = 1000
 
     @staticmethod
@@ -42,9 +40,13 @@ class Preprocessing:
     def _normalize(image: tf.Tensor, label: tf.Tensor) -> (tf.Tensor, tf.Tensor):
         # Change values range from [0, 255] to [-0.5, 0.5]
         image = (image / 255) - 0.5
-        image = tf.image.resize(image, (Preprocessing.IMG_SIZE, Preprocessing.IMG_SIZE))
         return image, label
 
+    @staticmethod
+    # this method is only used to reverse normalisation so we can display the images
+    def denormalize(image: tf.Tensor, label: tf.Tensor) -> (tf.Tensor, tf.Tensor):
+        return (image + 0.5) * 255, label
+        
     @staticmethod
     def _augment(image: tf.Tensor, label: tf.Tensor) -> (tf.Tensor, tf.Tensor):
         # These 4 (rotation, brightness, contrast, flip)
@@ -57,6 +59,8 @@ class Preprocessing:
         # image = tf.image.random_crop(image, size = (crop_size, crop_size))
         image = tf.image.resize(image, size=tf.constant((224, 224)))
         image = tf.image.random_flip_left_right(image)
+
+        image = tf.clip_by_value(image, -0.5, 0.5)
 
         return image, label
 
@@ -72,7 +76,9 @@ class Preprocessing:
         if for_training:
             ds = ds.repeat() # repeat forever
             ds = ds.map(Preprocessing._augment, num_parallel_calls=auto)
-        ds = ds.batch(batch_size)
+
+        if batch_size > 1:
+            ds = ds.batch(batch_size)
 
         # dataset fetches batches in the background while the model is training.
         ds = ds.prefetch(buffer_size=auto)
@@ -178,7 +184,7 @@ class Alexnet:
     def __init__(self):
         configure_gpu()
 
-    def load_data(self, sample_fraction=1):
+    def load_data(self, sample_fraction=1, only_one = False):
         # http://www.image-net.org/challenges/LSVRC/2012/
         # number_categories = 1000 
         # 1.2 million train images
@@ -191,15 +197,21 @@ class Alexnet:
 
         self.train_data_size = int(sample_fraction * total_train_data_size)
         self.validation_data_size = int(sample_fraction * total_validation_data_size)
+
+        if only_one: 
+            # I use this in testing
+            self.train_data_size = 1
+            self.validation_data_size = 1
+
         print(f"A fraction of {sample_fraction} was selected from the total data")
         print(f"Number of examples in the Train dataset is {self.train_data_size} and in the Validation dataset is {self.validation_data_size}")    
 
         self.train_data = train_data.take(self.train_data_size)
         self.validation_data = validation_data.take(self.validation_data_size)
 
-    def create_generator(self):
+    def create_generator(self, batch_size = 128):
         print("Creating the generators")
-        self.batch_size = 128
+        self.batch_size = batch_size
         self.train_sample_gen = Preprocessing.create_generator(self.train_data, for_training=True, batch_size = self.batch_size)
         self.validation_sample_gen = Preprocessing.create_generator(self.validation_data, for_training=False)
     
