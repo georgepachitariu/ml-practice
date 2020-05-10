@@ -15,9 +15,9 @@ def get_top_k_predictions(batch_predictions, k=10):
     return topk_label_names, topk_label_probabilities
 
 
-def display_images_with_predictions(ds, network):
+def display_images_with_predictions(ds, model):
     image_batch, label_batch=next(iter(ds))
-    batch_predictions = network.predict(image_batch)    
+    batch_predictions = model.predict(image_batch)    
 
     image_batch_denormalized = alexnet.Preprocessing.denormalize(image_batch) 
 
@@ -45,3 +45,5 @@ def display_images_with_predictions(ds, network):
         plt.xticks(rotation=90)
         
         if i*2+2 >= nrows*ncols: break
+
+    

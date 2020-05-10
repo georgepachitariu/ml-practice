@@ -2,6 +2,7 @@ import tensorflow as tf
 import tensorflow_datasets as tfds
 from tensorflow import keras
 import pickle, urllib
+from datetime import datetime
 
 class Data:
     @staticmethod
@@ -53,6 +54,11 @@ class Preprocessing:
     # this method is only used to reverse normalisation so we can display the images
     def denormalize(image: tf.Tensor) -> tf.Tensor:
         return (image + 0.5) * 255
+
+    @staticmethod
+    def _resize(image: tf.Tensor, label: tf.Tensor) -> (tf.Tensor, tf.Tensor):
+        image = tf.image.resize(image, size=tf.constant((224, 224)))
+        return image, label
         
     @staticmethod
     def _augment(image: tf.Tensor, label: tf.Tensor) -> (tf.Tensor, tf.Tensor):
@@ -63,8 +69,7 @@ class Preprocessing:
         image = tf.image.random_contrast(image, lower=0.9, upper=1.1)
         # crop_size = (tf.random.uniform([1])[0] * 0.25 + 0.75) * Preprocessing.IMG_SIZE
         # zoom in & out. max(zoom_out)=original size
-        # image = tf.image.random_crop(image, size = (crop_size, crop_size))
-        image = tf.image.resize(image, size=tf.constant((224, 224)))
+        # image = tf.image.random_crop(image, size = (crop_size, crop_size))        
         image = tf.image.random_flip_left_right(image)
 
         image = tf.clip_by_value(image, -0.5, 0.5)
@@ -77,6 +82,7 @@ class Preprocessing:
 
         ds = ds.map(Preprocessing._split_dict, num_parallel_calls=auto)
         ds = ds.map(Preprocessing._normalize, num_parallel_calls=auto)
+        ds = ds.map(Preprocessing._resize, num_parallel_calls=auto)
         
         ds = ds.shuffle(buffer_size=Preprocessing.BUFFER_SIZE)
 
@@ -104,7 +110,7 @@ class Model:
         # as well as in the fully-connected hidden layers, with the constant 1. This initialization accelerates
         # the early stages of learning by providing the ReLUs with positive inputs. We initialized the neuron
         # biases in the remaining layers with the constant 0."
-        one = tf.compat.v2.constant_initializer(value=0.1) # If I leave this to 1 the losse in the beginning will be huge.
+        one = tf.compat.v2.constant_initializer(value=1) # If I leave this to 1 the losse in the beginning will be huge.
         zero = tf.compat.v2.constant_initializer(value=0)
 
 
@@ -158,27 +164,21 @@ class Model:
         #                                                                 end_learning_rate=0.0005*0.001, power=1)
         
 
-        model.compile(optimizer=tf.keras.optimizers.SGD(learning_rate=0.001, momentum=0.9),  # learning_rate=learning_rate_fn
-                    loss='categorical_crossentropy', 
-                    metrics=[ # I don't know why but using 'accuracy' doesn't work
+
+        model.compile(optimizer=tf.keras.optimizers.SGD(learning_rate=0.01, momentum=0.9),  # learning_rate=learning_rate_fn
+
+                    # "categorical_crossentropy": uses a one-hot array to calculate the probability,
+                    # "sparse_categorical_crossentropy": uses a category index
+                    # source: https://stackoverflow.com/questions/58565394/what-is-the-difference-between-sparse-categorical-crossentropy-and-categorical-c
+                    loss='sparse_categorical_crossentropy', 
+
+                    metrics=['accuracy', # I don't know why but using accuracy doesn't work
                              #tf.keras.metrics.TopKCategoricalAccuracy(k=1), 
                              #tf.keras.metrics.TopKCategoricalAccuracy(k=3),
-                             tf.keras.metrics.TopKCategoricalAccuracy(k=10)
+                             #tf.keras.metrics.TopKCategoricalAccuracy(k=10)
                              ])
 
         return model
-
-    # TODO test it
-    @staticmethod
-    def save(model : keras.Sequential, path : str):
-        mobilenet_save_path = os.path.join(path, "alexnet/1/")
-        tf.saved_model.save(model, mobilenet_save_path)
-
-    # TODO test it
-    @staticmethod
-    def load(path : str) -> keras.Sequential:
-        return tf.saved_model.load(path)
-
 
 # TODO From paper: "At test time, the network makes a prediction by extracting five 224 × 224 patches
 # (the four corner patches and the center patch) as well as their horizontal reflections (hence ten patches in all),
@@ -244,22 +244,31 @@ class Alexnet:
                             # An epoch is an iteration over the entire x and y data provided.
                             epochs = dataset_iterations,
                             # Total number of steps (batches of samples) before declaring one epoch finished and starting the next epoch
-                            steps_per_epoch = self.train_size / batch_size
+                            steps_per_epoch = self.train_data_size / self.batch_size
                             )
-
+    
     def predict(self, images):
         return self.model.predict(images)
 
+    def save_model(self, path='trained_models/'):
+        path += datetime.now().strftime("%Y%m%d-%H:%M:%S")
+        tf.saved_model.save(self.model, path)
+    
+    @staticmethod
+    def load_model(path : str) -> keras.Sequential:
+        return tf.saved_model.load(path)
 
 
 if __name__ == '__main__':
     network = Alexnet()
-    network.load_data(sample_fraction=0.1)
+    network.load_data(sample_fraction=0.5)
     network.create_generator()
     network.build_model()
-    #network.train(dataset_iterations=5)
-    print(network.predict(network.train_augmented_sample_gen.take(10)))
+    network.train(dataset_iterations=1)
+    network.save_model()
 
+    
 # Run log
-# 3040/9375 [========>.....................] - ETA: 33:06 - loss: 3 652 687.3218 - top_k_categorical_accuracy: 0.9993Traceback (most recent call last):
-# 5971/9375 [==================>...........] - ETA: 17:33 - loss: 3 603 590.7420 - top_k_categorical_accuracy: 0.5951Traceback (most recent call last):
+#A fraction of 0.5 was selected from the total data
+#Number of examples in the Train dataset is 600000 and in the Validation dataset is 75000
+# 4688/4687 [==============================] - 1874s 400ms/step - loss: 6.9076 - accuracy: 9.2157e-04 - top_k_categorical_accuracy: 0.0000e+00 - val_loss: 6.9081 - val_accuracy: 0.0010 - val_top_k_categorical_accuracy: 0.0000e+00
