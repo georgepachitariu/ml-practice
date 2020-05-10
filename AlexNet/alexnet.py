@@ -1,7 +1,7 @@
 import tensorflow as tf
 import tensorflow_datasets as tfds
 from tensorflow import keras
-
+import pickle, urllib
 
 class Data:
     @staticmethod
@@ -26,6 +26,13 @@ class Data:
             assert image.min() == 0
             assert image.max() == 255
 
+    @staticmethod
+    def load_labelid_to_names():
+        # Hacky way of getting the class names because I couldn't find them in the tensorflow dataset library.
+        # More details here: https://gist.github.com/yrevar/942d3a0ac09ec9e5eb3a
+        return pickle.load(urllib.request.urlopen('https://gist.githubusercontent.com/yrevar/6135f1bd8dcf2e0cc683/raw/'+
+                                                  'd133d61a09d7e5a3b36b8c111a8dd5c4b5d560ee/imagenet1000_clsid_to_human.pkl') )
+
 
 class Preprocessing:
     # Resize: In the paper for images they kept the ratio, in mine the images were made square
@@ -44,8 +51,8 @@ class Preprocessing:
 
     @staticmethod
     # this method is only used to reverse normalisation so we can display the images
-    def denormalize(image: tf.Tensor, label: tf.Tensor) -> (tf.Tensor, tf.Tensor):
-        return (image + 0.5) * 255, label
+    def denormalize(image: tf.Tensor) -> tf.Tensor:
+        return (image + 0.5) * 255
         
     @staticmethod
     def _augment(image: tf.Tensor, label: tf.Tensor) -> (tf.Tensor, tf.Tensor):
@@ -161,6 +168,18 @@ class Model:
 
         return model
 
+    # TODO test it
+    @staticmethod
+    def save(model : keras.Sequential, path : str):
+        mobilenet_save_path = os.path.join(path, "alexnet/1/")
+        tf.saved_model.save(model, mobilenet_save_path)
+
+    # TODO test it
+    @staticmethod
+    def load(path : str) -> keras.Sequential:
+        return tf.saved_model.load(path)
+
+
 # TODO From paper: "At test time, the network makes a prediction by extracting five 224 × 224 patches
 # (the four corner patches and the center patch) as well as their horizontal reflections (hence ten patches in all),
 # and averaging the predictions made by the network’s softmax layer on the ten patches
@@ -212,28 +231,34 @@ class Alexnet:
     def create_generator(self, batch_size = 128):
         print("Creating the generators")
         self.batch_size = batch_size
-        self.train_sample_gen = Preprocessing.create_generator(self.train_data, for_training=True, batch_size = self.batch_size)
-        self.validation_sample_gen = Preprocessing.create_generator(self.validation_data, for_training=False)
+        self.train_augmented_gen = Preprocessing.create_generator(self.train_data, for_training=True, batch_size = self.batch_size)
+        self.validation_gen = Preprocessing.create_generator(self.validation_data, for_training=False)
     
     def build_model(self):
         self.model = Model.build()
 
     def train(self, dataset_iterations=5):
         print("Starting the training")
-        self.history = self.model.fit( x=self.train_sample_gen,
-                            validation_data = self.validation_sample_gen,
+        self.history = self.model.fit( x=self.train_augmented_gen,
+                            validation_data = self.validation_gen,
                             # An epoch is an iteration over the entire x and y data provided.
                             epochs = dataset_iterations,
                             # Total number of steps (batches of samples) before declaring one epoch finished and starting the next epoch
-                            steps_per_epoch = self.train_sample_size / batch_size
+                            steps_per_epoch = self.train_size / batch_size
                             )
+
+    def predict(self, images):
+        return self.model.predict(images)
+
 
 
 if __name__ == '__main__':
     network = Alexnet()
     network.load_data(sample_fraction=0.1)
     network.create_generator()
-    network.train(dataset_iterations=5)
+    network.build_model()
+    #network.train(dataset_iterations=5)
+    print(network.predict(network.train_augmented_sample_gen.take(10)))
 
 # Run log
 # 3040/9375 [========>.....................] - ETA: 33:06 - loss: 3 652 687.3218 - top_k_categorical_accuracy: 0.9993Traceback (most recent call last):
