@@ -199,6 +199,7 @@ def configure_gpu():
             print(e)
 
 class Alexnet:
+    current_version='v1.0'
 
     def __init__(self):
         configure_gpu()
@@ -237,35 +238,44 @@ class Alexnet:
     def build_model(self):
         self.model = Model.build()
 
-    def train(self, dataset_iterations=5):
+    @staticmethod
+    def get_checkpoint_folder() -> str:
+        # Checkpoint files contain your model's weights
+        # https://www.tensorflow.org/tutorials/keras/save_and_load        
+        return 'trained_models/' + Alexnet.current_version + '/cp.ckpt'
+
+    def train(self, dataset_iterations=5, ):
+        # Create a callback that saves the model's weights
+        checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(filepath=Alexnet.get_checkpoint_folder(),
+                                                 save_weights_only=True,
+                                                 verbose=1)
+
         print("Starting the training")
         self.history = self.model.fit( x=self.train_augmented_gen,
-                            validation_data = self.validation_gen,
+                            #validation_data = self.validation_gen,
                             # An epoch is an iteration over the entire x and y data provided.
                             epochs = dataset_iterations,
                             # Total number of steps (batches of samples) before declaring one epoch finished and starting the next epoch
-                            steps_per_epoch = self.train_data_size / self.batch_size
+                            steps_per_epoch = self.train_data_size / self.batch_size,
+                            callbacks=[checkpoint_callback]
                             )
     
     def predict(self, images):
         return self.model.predict(images)
-
-    def save_model(self, path='trained_models/'):
-        path += datetime.now().strftime("%Y%m%d-%H:%M:%S")
-        tf.saved_model.save(self.model, path)
     
-    @staticmethod
-    def load_model(path : str) -> keras.Sequential:
-        return tf.saved_model.load(path)
+    def load_model(self, path=None):
+        self.build_model()
+        if path is None:
+            path = Alexnet.get_checkpoint_folder()
+        self.model.load_weights(path)
 
 
 if __name__ == '__main__':
     network = Alexnet()
-    network.load_data(sample_fraction=0.5)
+    network.load_data(sample_fraction=0.01)#sample_fraction=0.5)
     network.create_generator()
     network.build_model()
     network.train(dataset_iterations=1)
-    network.save_model()
 
     
 # Run log
