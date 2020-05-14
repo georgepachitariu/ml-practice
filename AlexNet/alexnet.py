@@ -3,12 +3,14 @@ import tensorflow_datasets as tfds
 from tensorflow import keras
 import pickle, urllib
 from datetime import datetime
+import os
+import shutil
 
 class Data:
     @staticmethod
     def load() -> (tf.data.Dataset, tf.data.Dataset):
         train_ds, validation_ds = tfds.load(name="imagenet2012", split=['train', 'validation'],
-                                            data_dir='/home/gpachitariu/HDD/data')
+                                            data_dir='/home/gpachitariu/SSD/data')
         
         Data.test_assumptions_of_the_input(train_ds)
 
@@ -36,7 +38,6 @@ class Data:
 
 
 class Preprocessing:
-    # Resize: In the paper for images they kept the ratio, in mine the images were made square
     BUFFER_SIZE = 1000
 
     @staticmethod
@@ -56,6 +57,7 @@ class Preprocessing:
         return (image + 0.5) * 255
 
     @staticmethod
+    # TODO Resize: In the paper for images they kept the ratio, in mine the images were made square
     def _resize(image: tf.Tensor, label: tf.Tensor) -> (tf.Tensor, tf.Tensor):
         image = tf.image.resize(image, size=tf.constant((224, 224)))
         return image, label
@@ -110,12 +112,14 @@ class Model:
         # as well as in the fully-connected hidden layers, with the constant 1. This initialization accelerates
         # the early stages of learning by providing the ReLUs with positive inputs. We initialized the neuron
         # biases in the remaining layers with the constant 0."
-        one = tf.compat.v2.constant_initializer(value=1) # If I leave this to 1 the losse in the beginning will be huge.
+
+        # If I leave this to 1 it converges very slow in the beginning, (like the bias is so big that it "shadows" the true value)
+        one = tf.compat.v2.constant_initializer(value=0.001) 
+
         zero = tf.compat.v2.constant_initializer(value=0)
 
 
         model = keras.Sequential([
-
             # 1st conv. layer
             # Number of weights is ((11×11×3+1)×96) = 34944 where:
             #            11 * 11 = convolution filter size
@@ -143,10 +147,10 @@ class Model:
             keras.layers.Flatten(),
             tf.keras.layers.Dropout(rate=0.5),
 
-            keras.layers.Dense(4096, activation='relu', bias_initializer=zero, kernel_initializer=point_zero_one), 
+            keras.layers.Dense(4096, activation='relu', bias_initializer=one, kernel_initializer=point_zero_one), 
             tf.keras.layers.Dropout(rate=0.5),
 
-            keras.layers.Dense(4096, activation='relu', bias_initializer=zero, kernel_initializer=point_zero_one),
+            keras.layers.Dense(4096, activation='relu', bias_initializer=one, kernel_initializer=point_zero_one),
 
             # 1000 categories
             keras.layers.Dense(1000, activation='softmax', bias_initializer=zero, kernel_initializer=point_zero_one) 
@@ -164,7 +168,6 @@ class Model:
         #                                                                 end_learning_rate=0.0005*0.001, power=1)
         
 
-
         model.compile(optimizer=tf.keras.optimizers.SGD(learning_rate=0.01, momentum=0.9),  # learning_rate=learning_rate_fn
 
                     # "categorical_crossentropy": uses a one-hot array to calculate the probability,
@@ -172,10 +175,8 @@ class Model:
                     # source: https://stackoverflow.com/questions/58565394/what-is-the-difference-between-sparse-categorical-crossentropy-and-categorical-c
                     loss='sparse_categorical_crossentropy', 
 
-                    metrics=['accuracy', # I don't know why but using accuracy doesn't work
-                             #tf.keras.metrics.TopKCategoricalAccuracy(k=1), 
-                             #tf.keras.metrics.TopKCategoricalAccuracy(k=3),
-                             #tf.keras.metrics.TopKCategoricalAccuracy(k=10)
+                    metrics=['accuracy', 
+                             tf.keras.metrics.SparseTopKCategoricalAccuracy(k=5)
                              ])
 
         return model
@@ -244,11 +245,14 @@ class Alexnet:
         # https://www.tensorflow.org/tutorials/keras/save_and_load        
         return 'trained_models/' + Alexnet.current_version + '/cp.ckpt'
 
-    def train(self, dataset_iterations=5, ):
+    def train(self, dataset_iterations=5, logs='./logs'):
         # Create a callback that saves the model's weights
         checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(filepath=Alexnet.get_checkpoint_folder(),
-                                                 save_weights_only=True,
-                                                 verbose=1)
+                                                 save_weights_only=True, verbose=1)
+
+        # Create a callback that logs the progress so you can visualize it in Tensorboard
+        log_dir = logs + '/fit/' + datetime.now().strftime('%Y%m%d-%H%M%S')
+        tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1)
 
         print("Starting the training")
         self.history = self.model.fit( x=self.train_augmented_gen,
@@ -257,7 +261,7 @@ class Alexnet:
                             epochs = dataset_iterations,
                             # Total number of steps (batches of samples) before declaring one epoch finished and starting the next epoch
                             steps_per_epoch = self.train_data_size / self.batch_size,
-                            callbacks=[checkpoint_callback]
+                            callbacks=[checkpoint_callback, tensorboard_callback]
                             )
     
     def predict(self, images):
@@ -272,13 +276,15 @@ class Alexnet:
 
 if __name__ == '__main__':
     network = Alexnet()
-    network.load_data(sample_fraction=0.01)#sample_fraction=0.5)
+    network.load_data(sample_fraction=0.3)
     network.create_generator()
     network.build_model()
-    network.train(dataset_iterations=1)
+    network.train(dataset_iterations=30)
 
     
-# Run log
-#A fraction of 0.5 was selected from the total data
-#Number of examples in the Train dataset is 600000 and in the Validation dataset is 75000
-# 4688/4687 [==============================] - 1874s 400ms/step - loss: 6.9076 - accuracy: 9.2157e-04 - top_k_categorical_accuracy: 0.0000e+00 - val_loss: 6.9081 - val_accuracy: 0.0010 - val_top_k_categorical_accuracy: 0.0000e+00
+# Journal (Run log)
+# New record:
+# sample_fraction=0.3 - Epoch 30/30
+# 2812/2812 [============================>.] - ETA: 0s - loss: 2.8876 - accuracy: 0.3529 - sparse_top_k_categorical_accuracy: 0.6286
+
+# [...]
