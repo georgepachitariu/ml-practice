@@ -65,7 +65,7 @@ class Preprocessing:
     def _augment(image: tf.Tensor, label: tf.Tensor) -> (tf.Tensor, tf.Tensor):
         image = tf.image.random_brightness(image, max_delta=0.1)
         image = tf.image.random_contrast(image, lower=0.9, upper=1.1)
-        image = tf.image.random_crop(image, size = (224, 224))        
+        image = tf.image.random_crop(image, size = (224, 224, 3))        
         image = tf.image.random_flip_left_right(image)
 
         image = tf.clip_by_value(image, -0.5, 0.5)
