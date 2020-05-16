@@ -1,7 +1,7 @@
 import tensorflow as tf
+from tensorflow.keras.layers import Conv2D, BatchNormalization, MaxPooling2D, Flatten, Dropout, Dense
 import tensorflow_addons as tfa
 import tensorflow_datasets as tfds
-from tensorflow import keras
 import pickle, urllib
 from datetime import datetime
 import os
@@ -58,19 +58,14 @@ class Preprocessing:
     @staticmethod
     # TODO Resize: In the paper for images they kept the ratio, in mine the images were made square
     def _resize(image: tf.Tensor, label: tf.Tensor) -> (tf.Tensor, tf.Tensor):
-        image = tf.image.resize(image, size=tf.constant((224, 224)))
+        image = tf.image.resize(image, size=tf.constant((256, 256)))
         return image, label
         
     @staticmethod
     def _augment(image: tf.Tensor, label: tf.Tensor) -> (tf.Tensor, tf.Tensor):
-        # These 4 (rotation, brightness, contrast, flip)
-        # are added by me as a helper to get to 70% accuracy, not part of the paper
-        # TODO img = tf.keras.preprocessing.image.random_rotation(rg=45, fill_mode='constant', cval=0)
         image = tf.image.random_brightness(image, max_delta=0.1)
         image = tf.image.random_contrast(image, lower=0.9, upper=1.1)
-        # crop_size = (tf.random.uniform([1])[0] * 0.25 + 0.75) * Preprocessing.IMG_SIZE
-        # zoom in & out. max(zoom_out)=original size
-        # image = tf.image.random_crop(image, size = (crop_size, crop_size))        
+        image = tf.image.random_crop(image, size = (224, 224))        
         image = tf.image.random_flip_left_right(image)
 
         image = tf.clip_by_value(image, -0.5, 0.5)
@@ -118,45 +113,45 @@ class Model:
         one = tf.compat.v2.constant_initializer(value=0.001) 
         zero = tf.compat.v2.constant_initializer(value=0)
 
-        model = keras.Sequential([
+        model = tf.keras.Sequential([
             # 1st conv. layer
             # Number of weights is ((11×11×3+1)×96) = 34944 where:
             #            11 * 11 = convolution filter size
             #                  3 = number of input layers 
             #                  1 = bias
             #                 96 = number of output layers
-            keras.layers.Conv2D(96, (11, 11),  input_shape=(224, 224, 3), strides=4, activation='relu', 
+            Conv2D(96, (11, 11),  input_shape=(224, 224, 3), strides=4, activation='relu', 
                                 bias_initializer=zero, kernel_initializer=point_zero_one),
-            keras.layers.BatchNormalization(),
-            keras.layers.MaxPooling2D(pool_size=3, strides=2),
+            BatchNormalization(),
+            MaxPooling2D(pool_size=3, strides=2),
 
             # 2nd conv. layer
             # Number of weights is ((5×5×96+1)×256) = 614656
-            keras.layers.Conv2D(256, (5, 5), activation='relu', bias_initializer=one, kernel_initializer=point_zero_one),
-            keras.layers.BatchNormalization(),
-            keras.layers.MaxPooling2D(pool_size=3, strides=2),
+            Conv2D(256, (5, 5), activation='relu', bias_initializer=one, kernel_initializer=point_zero_one),
+            BatchNormalization(),
+            MaxPooling2D(pool_size=3, strides=2),
 
             # 3rd conv. layer
-            keras.layers.Conv2D(384, (3, 3), activation='relu', bias_initializer=zero, kernel_initializer=point_zero_one),
+            Conv2D(384, (3, 3), activation='relu', bias_initializer=zero, kernel_initializer=point_zero_one),
 
             # 4th conv. layer
-            keras.layers.Conv2D(384, (3, 3), activation='relu', bias_initializer=one, kernel_initializer=point_zero_one),
+            Conv2D(384, (3, 3), activation='relu', bias_initializer=one, kernel_initializer=point_zero_one),
 
             # 5th conv. layer
-            keras.layers.Conv2D(256, (3, 3), activation='relu', bias_initializer=one, kernel_initializer=point_zero_one),
-            keras.layers.BatchNormalization(),
-            keras.layers.MaxPooling2D(pool_size=3, strides=2),
+            Conv2D(256, (3, 3), activation='relu', bias_initializer=one, kernel_initializer=point_zero_one),
+            BatchNormalization(),
+            MaxPooling2D(pool_size=3, strides=2),
             
-            keras.layers.Flatten(),
-            keras.layers.Dropout(rate=0.5),
+            Flatten(),
+            Dropout(rate=0.5),
 
-            keras.layers.Dense(4096, activation='relu', bias_initializer=one, kernel_initializer=point_zero_one), 
-            keras.layers.Dropout(rate=0.5),
+            Dense(4096, activation='relu', bias_initializer=one, kernel_initializer=point_zero_one), 
+            Dropout(rate=0.5),
 
-            keras.layers.Dense(4096, activation='relu', bias_initializer=one, kernel_initializer=point_zero_one),
+            Dense(4096, activation='relu', bias_initializer=one, kernel_initializer=point_zero_one),
 
             # 1000 categories
-            keras.layers.Dense(1000, activation='softmax', bias_initializer=zero, kernel_initializer=point_zero_one) 
+            Dense(1000, activation='softmax', bias_initializer=zero, kernel_initializer=point_zero_one) 
         ])
 
 
