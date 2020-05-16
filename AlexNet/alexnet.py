@@ -1,4 +1,5 @@
 import tensorflow as tf
+import tensorflow_addons as tfa
 import tensorflow_datasets as tfds
 from tensorflow import keras
 import pickle, urllib
@@ -38,8 +39,6 @@ class Data:
 
 
 class Preprocessing:
-    BUFFER_SIZE = 1000
-
     @staticmethod
     def _split_dict(t: tf.Tensor) -> (tf.Tensor, tf.Tensor):
         return t['image'], t['label']
@@ -79,24 +78,26 @@ class Preprocessing:
         return image, label
 
     @staticmethod
-    def create_generator(ds, for_training, batch_size = 128):
+    def create_generator(ds, for_training, batch_size = 128, buffer_size = 256):
         auto=tf.data.experimental.AUTOTUNE
 
         ds = ds.map(Preprocessing._split_dict, num_parallel_calls=auto)
         ds = ds.map(Preprocessing._normalize, num_parallel_calls=auto)
         ds = ds.map(Preprocessing._resize, num_parallel_calls=auto)
         
-        ds = ds.shuffle(buffer_size=Preprocessing.BUFFER_SIZE)
-
         if for_training:
-            ds = ds.repeat() # repeat forever
             ds = ds.map(Preprocessing._augment, num_parallel_calls=auto)
-
+            ds = ds.repeat() # repeat forever
+            ds = ds.shuffle(buffer_size=buffer_size)
+        
         if batch_size > 1:
             ds = ds.batch(batch_size)
 
-        # dataset fetches batches in the background while the model is training.
-        ds = ds.prefetch(buffer_size=auto)
+        # Prefetching overlaps the preprocessing and model execution of a training step. 
+        # While the model is executing training step s, the input pipeline is reading the data for step s+1. 
+        # Doing so reduces the step time to the maximum (as opposed to the sum) of the training and the time it takes to extract the data.
+        # https://www.tensorflow.org/guide/data_performance
+        ds = ds.prefetch(buffer_size=1) # using "auto" ends up with OOM during validation step 
 
         return ds
 
@@ -113,11 +114,9 @@ class Model:
         # the early stages of learning by providing the ReLUs with positive inputs. We initialized the neuron
         # biases in the remaining layers with the constant 0."
 
-        # If I leave this to 1 it converges very slow in the beginning, (like the bias is so big that it "shadows" the true value)
+        # I put this to 0.001 instead of 1, because with 1 it converges very slow in the beginning, (like the bias is so big that it "shadows" the true value)
         one = tf.compat.v2.constant_initializer(value=0.001) 
-
         zero = tf.compat.v2.constant_initializer(value=0)
-
 
         model = keras.Sequential([
             # 1st conv. layer
@@ -127,8 +126,7 @@ class Model:
             #                  1 = bias
             #                 96 = number of output layers
             keras.layers.Conv2D(96, (11, 11),  input_shape=(224, 224, 3), strides=4, activation='relu', 
-                                bias_initializer=zero,
-                                kernel_initializer=point_zero_one),
+                                bias_initializer=zero, kernel_initializer=point_zero_one),
             keras.layers.MaxPooling2D(pool_size=3, strides=2),
 
             # 2nd conv. layer
@@ -156,19 +154,15 @@ class Model:
             keras.layers.Dense(1000, activation='softmax', bias_initializer=zero, kernel_initializer=point_zero_one) 
         ])
 
-        
-        # TODO 2. From paper: "We used an equal learning rate for all layers, which we adjusted manually throughout training.
-        # The heuristic which we followed was to divide the learning rate by 10 when the validation error
-        # rate stopped improving with the current learning rate. The learning rate was initialized at 0.01 and
-        # reduced three times prior to termination. We trained the network for roughly 90 cycles through the
-        # training set of 1.2 million images, which took five to six days on two NVIDIA GTX 580 3GB GPUs"
 
-        # TODO: What is weight decay? Add weight decay.
-        # learning_rate_fn = tf.keras.optimizers.schedules.PolynomialDecay(initial_learning_rate=0.001, decay_steps=1200,
-        #                                                                 end_learning_rate=0.0005*0.001, power=1)
-        
+        # [PAPER] "We used an equal learning rate for all layers, which we adjusted manually throughout training."
+        # Also check the ReduceLROnPlateau training callback lower
+        model.compile(
+                    # [PAPER] We trained our models using stochastic gradient descent with a batch size of 128 examples, momentum of 0.9, and weight decay of 0.0005.
+                    # TODO this didn't work. In tensorboard I see that the kernel and bias distributions went to 0 after 5-10 epochs and the loss didn't decrease almost at all. 
+                    # optimizer=tfa.optimizers.SGDW(weight_decay=0.0005, learning_rate = 0.01, momentum = 0.9),
 
-        model.compile(optimizer=tf.keras.optimizers.SGD(learning_rate=0.01, momentum=0.9),  # learning_rate=learning_rate_fn
+                    optimizer=tf.keras.optimizers.SGD(learning_rate=0.01, momentum=0.9),  # learning_rate=learning_rate_fn
 
                     # "categorical_crossentropy": uses a one-hot array to calculate the probability,
                     # "sparse_categorical_crossentropy": uses a category index
@@ -200,7 +194,7 @@ def configure_gpu():
             print(e)
 
 class Alexnet:
-    current_version='v1.0'
+    
 
     def __init__(self):
         configure_gpu()
@@ -240,14 +234,20 @@ class Alexnet:
         self.model = Model.build()
 
     @staticmethod
-    def get_checkpoint_folder() -> str:
+    def _get_checkpoint_folder(version) -> str:
         # Checkpoint files contain your model's weights
         # https://www.tensorflow.org/tutorials/keras/save_and_load        
-        return 'trained_models/' + Alexnet.current_version + '/cp.ckpt'
+        return 'trained_models/' + version + '/cp.ckpt'
 
-    def train(self, dataset_iterations=5, logs='./logs'):
+    def train(self, dataset_iterations, version, logs='./logs'):
+
+        # [PAPER] The heuristic which we followed was to divide the learning rate by 10 when the validation error
+        # rate stopped improving with the current learning rate. The learning rate was initialized at 0.01 and
+        # reduced three times prior to termination.
+        reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.1, patience=5, min_lr=0.0001)
+
         # Create a callback that saves the model's weights
-        checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(filepath=Alexnet.get_checkpoint_folder(),
+        checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(filepath=Alexnet._get_checkpoint_folder(version),
                                                  save_weights_only=True, verbose=1)
 
         # Create a callback that logs the progress so you can visualize it in Tensorboard
@@ -256,33 +256,42 @@ class Alexnet:
 
         print("Starting the training")
         self.history = self.model.fit( x=self.train_augmented_gen,
-                            #validation_data = self.validation_gen,
+                            validation_data = self.validation_gen,
                             # An epoch is an iteration over the entire x and y data provided.
                             epochs = dataset_iterations,
                             # Total number of steps (batches of samples) before declaring one epoch finished and starting the next epoch
                             steps_per_epoch = self.train_data_size / self.batch_size,
-                            callbacks=[checkpoint_callback, tensorboard_callback]
+                            callbacks=[reduce_lr, checkpoint_callback, tensorboard_callback]
                             )
     
     def predict(self, images):
         return self.model.predict(images)
     
-    def load_model(self, path=None):
+    def load_model(self, version, path=None):
         self.build_model()
         if path is None:
-            path = Alexnet.get_checkpoint_folder()
+            path = Alexnet._get_checkpoint_folder(version)
         self.model.load_weights(path)
 
 
 if __name__ == '__main__':
+    current_version = 'v1.1'
     network = Alexnet()
-    network.load_data(sample_fraction=0.3)
+    network.load_data(sample_fraction=0.5)
     network.create_generator()
     network.build_model()
-    network.train(dataset_iterations=30)
+
+    # [PAPER] We trained the network for roughly 90 cycles through the
+    # training set of 1.2 million images, which took five to six days on two NVIDIA GTX 580 3GB GPUs"
+    network.train(dataset_iterations=45, version=current_version)
 
     
 # Journal (Run log)
+# New record
+# Epoch 30/30:
+# 938/937 [==============================] - 132s 141ms/step - loss: 2.6609 - accuracy: 0.3872 - sparse_top_k_categorical_accuracy: 0.6590 - 
+# val_loss: 5.0430 - val_accuracy: 0.1736 - val_sparse_top_k_categorical_accuracy: 0.3643
+
 # New record:
 # sample_fraction=0.3 - Epoch 30/30
 # 2812/2812 [============================>.] - ETA: 0s - loss: 2.8876 - accuracy: 0.3529 - sparse_top_k_categorical_accuracy: 0.6286
