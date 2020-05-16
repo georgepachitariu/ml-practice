@@ -142,6 +142,7 @@ class Model:
 
             # 5th conv. layer
             keras.layers.Conv2D(256, (3, 3), activation='relu', bias_initializer=one, kernel_initializer=point_zero_one),
+            keras.layers.MaxPooling2D(pool_size=3, strides=2),
             keras.layers.Flatten(),
             tf.keras.layers.Dropout(rate=0.5),
 
