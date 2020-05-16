@@ -127,11 +127,13 @@ class Model:
             #                 96 = number of output layers
             keras.layers.Conv2D(96, (11, 11),  input_shape=(224, 224, 3), strides=4, activation='relu', 
                                 bias_initializer=zero, kernel_initializer=point_zero_one),
+            keras.layers.BatchNormalization(),
             keras.layers.MaxPooling2D(pool_size=3, strides=2),
 
             # 2nd conv. layer
             # Number of weights is ((5×5×96+1)×256) = 614656
             keras.layers.Conv2D(256, (5, 5), activation='relu', bias_initializer=one, kernel_initializer=point_zero_one),
+            keras.layers.BatchNormalization(),
             keras.layers.MaxPooling2D(pool_size=3, strides=2),
 
             # 3rd conv. layer
@@ -142,12 +144,14 @@ class Model:
 
             # 5th conv. layer
             keras.layers.Conv2D(256, (3, 3), activation='relu', bias_initializer=one, kernel_initializer=point_zero_one),
+            keras.layers.BatchNormalization(),
             keras.layers.MaxPooling2D(pool_size=3, strides=2),
+            
             keras.layers.Flatten(),
-            tf.keras.layers.Dropout(rate=0.5),
+            keras.layers.Dropout(rate=0.5),
 
             keras.layers.Dense(4096, activation='relu', bias_initializer=one, kernel_initializer=point_zero_one), 
-            tf.keras.layers.Dropout(rate=0.5),
+            keras.layers.Dropout(rate=0.5),
 
             keras.layers.Dense(4096, activation='relu', bias_initializer=one, kernel_initializer=point_zero_one),
 
@@ -276,7 +280,7 @@ class Alexnet:
 
 
 if __name__ == '__main__':
-    current_version = 'v1.1'
+    current_version = 'v1.2'
     network = Alexnet()
     network.load_data(sample_fraction=0.5)
     network.create_generator()
