@@ -1,9 +1,11 @@
 import tensorflow as tf
+from tensorflow.keras.layers import Conv2D, BatchNormalization, MaxPooling2D, Flatten, Dropout, Dense
+import tensorflow_addons as tfa
 import tensorflow_datasets as tfds
-from tensorflow import keras
 import pickle, urllib
 from datetime import datetime
 import os
+import sys
 import shutil
 
 class Data:
@@ -38,8 +40,6 @@ class Data:
 
 
 class Preprocessing:
-    BUFFER_SIZE = 1000
-
     @staticmethod
     def _split_dict(t: tf.Tensor) -> (tf.Tensor, tf.Tensor):
         return t['image'], t['label']
@@ -59,19 +59,21 @@ class Preprocessing:
     @staticmethod
     # TODO Resize: In the paper for images they kept the ratio, in mine the images were made square
     def _resize(image: tf.Tensor, label: tf.Tensor) -> (tf.Tensor, tf.Tensor):
+        image = tf.image.resize(image, size=tf.constant((256, 256)))
+        return image, label
+
+    @staticmethod
+    # TODO TEMPORARY
+    def _resize_testing(image: tf.Tensor, label: tf.Tensor) -> (tf.Tensor, tf.Tensor):
         image = tf.image.resize(image, size=tf.constant((224, 224)))
         return image, label
+
         
     @staticmethod
     def _augment(image: tf.Tensor, label: tf.Tensor) -> (tf.Tensor, tf.Tensor):
-        # These 4 (rotation, brightness, contrast, flip)
-        # are added by me as a helper to get to 70% accuracy, not part of the paper
-        # TODO img = tf.keras.preprocessing.image.random_rotation(rg=45, fill_mode='constant', cval=0)
         image = tf.image.random_brightness(image, max_delta=0.1)
         image = tf.image.random_contrast(image, lower=0.9, upper=1.1)
-        # crop_size = (tf.random.uniform([1])[0] * 0.25 + 0.75) * Preprocessing.IMG_SIZE
-        # zoom in & out. max(zoom_out)=original size
-        # image = tf.image.random_crop(image, size = (crop_size, crop_size))        
+        image = tf.image.random_crop(image, size = (224, 224, 3))        
         image = tf.image.random_flip_left_right(image)
 
         image = tf.clip_by_value(image, -0.5, 0.5)
@@ -79,24 +81,29 @@ class Preprocessing:
         return image, label
 
     @staticmethod
-    def create_generator(ds, for_training, batch_size = 128):
+    def create_generator(ds, for_training, batch_size = 128, buffer_size = 256):
         auto=tf.data.experimental.AUTOTUNE
 
         ds = ds.map(Preprocessing._split_dict, num_parallel_calls=auto)
         ds = ds.map(Preprocessing._normalize, num_parallel_calls=auto)
-        ds = ds.map(Preprocessing._resize, num_parallel_calls=auto)
-        
-        ds = ds.shuffle(buffer_size=Preprocessing.BUFFER_SIZE)
-
         if for_training:
-            ds = ds.repeat() # repeat forever
+            ds = ds.map(Preprocessing._resize, num_parallel_calls=auto)
+        else:
+            ds = ds.map(Preprocessing._resize_testing, num_parallel_calls=auto)
+        
+        if for_training:
             ds = ds.map(Preprocessing._augment, num_parallel_calls=auto)
-
+            ds = ds.repeat() # repeat forever
+            ds = ds.shuffle(buffer_size=buffer_size)
+        
         if batch_size > 1:
             ds = ds.batch(batch_size)
 
-        # dataset fetches batches in the background while the model is training.
-        ds = ds.prefetch(buffer_size=auto)
+        # Prefetching overlaps the preprocessing and model execution of a training step. 
+        # While the model is executing training step s, the input pipeline is reading the data for step s+1. 
+        # Doing so reduces the step time to the maximum (as opposed to the sum) of the training and the time it takes to extract the data.
+        # https://www.tensorflow.org/guide/data_performance
+        ds = ds.prefetch(buffer_size=1) # using "auto" ends up with OOM during validation step 
 
         return ds
 
@@ -113,62 +120,71 @@ class Model:
         # the early stages of learning by providing the ReLUs with positive inputs. We initialized the neuron
         # biases in the remaining layers with the constant 0."
 
-        # If I leave this to 1 it converges very slow in the beginning, (like the bias is so big that it "shadows" the true value)
-        one = tf.compat.v2.constant_initializer(value=0.001) 
-
+        # I put this to 0.1 instead of 1, because with 1 it converges very slow in the beginning, (like the bias is so big that it "shadows" the true value)
+        one = tf.compat.v2.constant_initializer(value=0.1) 
         zero = tf.compat.v2.constant_initializer(value=0)
 
+        # "L2 regularization is also called weight decay in the context of neural networks. 
+        # Don't let the different name confuse you: weight decay is mathematically the exact same as L2 regularization."
+        # https://www.tensorflow.org/tutorials/keras/overfit_and_underfit
+        weight_decay = tf.keras.regularizers.l2(0) # TODO I changed it from default: 0.0005
 
-        model = keras.Sequential([
+        model = tf.keras.Sequential([
             # 1st conv. layer
             # Number of weights is ((11×11×3+1)×96) = 34944 where:
             #            11 * 11 = convolution filter size
             #                  3 = number of input layers 
             #                  1 = bias
             #                 96 = number of output layers
-            keras.layers.Conv2D(96, (11, 11),  input_shape=(224, 224, 3), strides=4, activation='relu', 
-                                bias_initializer=zero,
-                                kernel_initializer=point_zero_one),
-            keras.layers.MaxPooling2D(pool_size=3, strides=2),
+            Conv2D(96, (11, 11),  input_shape=(224, 224, 3), strides=4, activation='relu', 
+                                bias_initializer=zero, 
+                                kernel_initializer=point_zero_one, kernel_regularizer=weight_decay),
+            BatchNormalization(),
+            MaxPooling2D(pool_size=3, strides=2),
 
             # 2nd conv. layer
             # Number of weights is ((5×5×96+1)×256) = 614656
-            keras.layers.Conv2D(256, (5, 5), activation='relu', bias_initializer=one, kernel_initializer=point_zero_one),
-            keras.layers.MaxPooling2D(pool_size=3, strides=2),
+            Conv2D(256, (5, 5), activation='relu', bias_initializer=one, 
+                   kernel_initializer=point_zero_one, kernel_regularizer=weight_decay),
+            BatchNormalization(),
+            MaxPooling2D(pool_size=3, strides=2),
 
             # 3rd conv. layer
-            keras.layers.Conv2D(384, (3, 3), activation='relu', bias_initializer=zero, kernel_initializer=point_zero_one),
+            Conv2D(384, (3, 3), activation='relu', bias_initializer=zero, 
+                   kernel_initializer=point_zero_one, kernel_regularizer=weight_decay),
 
             # 4th conv. layer
-            keras.layers.Conv2D(384, (3, 3), activation='relu', bias_initializer=one, kernel_initializer=point_zero_one),
+            Conv2D(384, (3, 3), activation='relu', bias_initializer=one, 
+                   kernel_initializer=point_zero_one, kernel_regularizer=weight_decay),
 
             # 5th conv. layer
-            keras.layers.Conv2D(256, (3, 3), activation='relu', bias_initializer=one, kernel_initializer=point_zero_one),
-            keras.layers.Flatten(),
-            tf.keras.layers.Dropout(rate=0.5),
+            Conv2D(256, (3, 3), activation='relu', bias_initializer=one, 
+                   kernel_initializer=point_zero_one, kernel_regularizer=weight_decay),
+            BatchNormalization(),
+            MaxPooling2D(pool_size=3, strides=2),
+            
+            Flatten(),
+            Dropout(rate=0.5),
 
-            keras.layers.Dense(4096, activation='relu', bias_initializer=one, kernel_initializer=point_zero_one), 
-            tf.keras.layers.Dropout(rate=0.5),
+            Dense(4096, activation='relu', bias_initializer=one, 
+                   kernel_initializer=point_zero_one, kernel_regularizer=weight_decay), 
+            Dropout(rate=0.5),
 
-            keras.layers.Dense(4096, activation='relu', bias_initializer=one, kernel_initializer=point_zero_one),
+            Dense(4096, activation='relu', bias_initializer=one, 
+                   kernel_initializer=point_zero_one, kernel_regularizer=weight_decay),
 
             # 1000 categories
-            keras.layers.Dense(1000, activation='softmax', bias_initializer=zero, kernel_initializer=point_zero_one) 
+            Dense(1000, activation='softmax', bias_initializer=zero, 
+                   kernel_initializer=point_zero_one) 
         ])
 
-        
-        # TODO 2. From paper: "We used an equal learning rate for all layers, which we adjusted manually throughout training.
-        # The heuristic which we followed was to divide the learning rate by 10 when the validation error
-        # rate stopped improving with the current learning rate. The learning rate was initialized at 0.01 and
-        # reduced three times prior to termination. We trained the network for roughly 90 cycles through the
-        # training set of 1.2 million images, which took five to six days on two NVIDIA GTX 580 3GB GPUs"
 
-        # TODO: What is weight decay? Add weight decay.
-        # learning_rate_fn = tf.keras.optimizers.schedules.PolynomialDecay(initial_learning_rate=0.001, decay_steps=1200,
-        #                                                                 end_learning_rate=0.0005*0.001, power=1)
-        
-
-        model.compile(optimizer=tf.keras.optimizers.SGD(learning_rate=0.01, momentum=0.9),  # learning_rate=learning_rate_fn
+        # [PAPER] "We used an equal learning rate for all layers, which we adjusted manually throughout training."
+        # Also check the ReduceLROnPlateau training callback lower
+        model.compile(
+                    # [PAPER] We trained our models using stochastic gradient descent with a batch size of 128 examples, momentum of 0.9, and weight decay of 0.0005.
+                    # note: the weight decay is above. Check each layer.
+                    optimizer=tf.keras.optimizers.SGD(learning_rate=0.01, momentum=0.9), 
 
                     # "categorical_crossentropy": uses a one-hot array to calculate the probability,
                     # "sparse_categorical_crossentropy": uses a category index
@@ -200,7 +216,7 @@ def configure_gpu():
             print(e)
 
 class Alexnet:
-    current_version='v1.0'
+    
 
     def __init__(self):
         configure_gpu()
@@ -240,14 +256,20 @@ class Alexnet:
         self.model = Model.build()
 
     @staticmethod
-    def get_checkpoint_folder() -> str:
+    def _get_checkpoint_folder(version) -> str:
         # Checkpoint files contain your model's weights
         # https://www.tensorflow.org/tutorials/keras/save_and_load        
-        return 'trained_models/' + Alexnet.current_version + '/cp.ckpt'
+        return 'trained_models/' + version + '/cp.ckpt'
 
-    def train(self, dataset_iterations=5, logs='./logs'):
+    def train(self, dataset_iterations, version, logs='./logs'):
+
+        # [PAPER] The heuristic which we followed was to divide the learning rate by 10 when the validation error
+        # rate stopped improving with the current learning rate. The learning rate was initialized at 0.01 and
+        # reduced three times prior to termination.
+        reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.1, patience=1, min_lr=0.0001)
+
         # Create a callback that saves the model's weights
-        checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(filepath=Alexnet.get_checkpoint_folder(),
+        checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(filepath=Alexnet._get_checkpoint_folder(version),
                                                  save_weights_only=True, verbose=1)
 
         # Create a callback that logs the progress so you can visualize it in Tensorboard
@@ -256,33 +278,47 @@ class Alexnet:
 
         print("Starting the training")
         self.history = self.model.fit( x=self.train_augmented_gen,
-                            #validation_data = self.validation_gen,
+                            validation_data = self.validation_gen,
                             # An epoch is an iteration over the entire x and y data provided.
                             epochs = dataset_iterations,
                             # Total number of steps (batches of samples) before declaring one epoch finished and starting the next epoch
                             steps_per_epoch = self.train_data_size / self.batch_size,
-                            callbacks=[checkpoint_callback, tensorboard_callback]
+                            callbacks=[reduce_lr, checkpoint_callback, tensorboard_callback]
                             )
     
     def predict(self, images):
         return self.model.predict(images)
     
-    def load_model(self, path=None):
+    def load_model(self, version, path=None):
         self.build_model()
         if path is None:
-            path = Alexnet.get_checkpoint_folder()
+            path = Alexnet._get_checkpoint_folder(version)
         self.model.load_weights(path)
 
 
 if __name__ == '__main__':
+    current_version = 'v1.4'
     network = Alexnet()
-    network.load_data(sample_fraction=0.3)
+    network.load_data(sample_fraction=1)
     network.create_generator()
     network.build_model()
-    network.train(dataset_iterations=30)
+
+    # The default behaviour should be to resume training for current version, 
+    # so we don't make accidents by overwriting a trained model.
+    if len(sys.argv)==1 or sys.argv[1] is not 'start_new':
+        network.load_model(current_version)
+
+    # [PAPER] We trained the network for roughly 90 cycles through the
+    # training set of 1.2 million images, which took five to six days on two NVIDIA GTX 580 3GB GPUs"
+    network.train(dataset_iterations=45, version=current_version)
 
     
 # Journal (Run log)
+# New record
+# Epoch 30/30:
+# 938/937 [==============================] - 132s 141ms/step - loss: 2.6609 - accuracy: 0.3872 - sparse_top_k_categorical_accuracy: 0.6590 - 
+# val_loss: 5.0430 - val_accuracy: 0.1736 - val_sparse_top_k_categorical_accuracy: 0.3643
+
 # New record:
 # sample_fraction=0.3 - Epoch 30/30
 # 2812/2812 [============================>.] - ETA: 0s - loss: 2.8876 - accuracy: 0.3529 - sparse_top_k_categorical_accuracy: 0.6286
