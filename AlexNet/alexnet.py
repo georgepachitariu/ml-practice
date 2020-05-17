@@ -5,6 +5,7 @@ import tensorflow_datasets as tfds
 import pickle, urllib
 from datetime import datetime
 import os
+import sys
 import shutil
 
 class Data:
@@ -60,6 +61,13 @@ class Preprocessing:
     def _resize(image: tf.Tensor, label: tf.Tensor) -> (tf.Tensor, tf.Tensor):
         image = tf.image.resize(image, size=tf.constant((256, 256)))
         return image, label
+
+    @staticmethod
+    # TODO TEMPORARY
+    def _resize_testing(image: tf.Tensor, label: tf.Tensor) -> (tf.Tensor, tf.Tensor):
+        image = tf.image.resize(image, size=tf.constant((224, 224)))
+        return image, label
+
         
     @staticmethod
     def _augment(image: tf.Tensor, label: tf.Tensor) -> (tf.Tensor, tf.Tensor):
@@ -78,7 +86,10 @@ class Preprocessing:
 
         ds = ds.map(Preprocessing._split_dict, num_parallel_calls=auto)
         ds = ds.map(Preprocessing._normalize, num_parallel_calls=auto)
-        ds = ds.map(Preprocessing._resize, num_parallel_calls=auto)
+        if for_training:
+            ds = ds.map(Preprocessing._resize, num_parallel_calls=auto)
+        else:
+            ds = ds.map(Preprocessing._resize_testing, num_parallel_calls=auto)
         
         if for_training:
             ds = ds.map(Preprocessing._augment, num_parallel_calls=auto)
@@ -109,9 +120,14 @@ class Model:
         # the early stages of learning by providing the ReLUs with positive inputs. We initialized the neuron
         # biases in the remaining layers with the constant 0."
 
-        # I put this to 0.001 instead of 1, because with 1 it converges very slow in the beginning, (like the bias is so big that it "shadows" the true value)
-        one = tf.compat.v2.constant_initializer(value=0.001) 
+        # I put this to 0.1 instead of 1, because with 1 it converges very slow in the beginning, (like the bias is so big that it "shadows" the true value)
+        one = tf.compat.v2.constant_initializer(value=0.1) 
         zero = tf.compat.v2.constant_initializer(value=0)
+
+        # "L2 regularization is also called weight decay in the context of neural networks. 
+        # Don't let the different name confuse you: weight decay is mathematically the exact same as L2 regularization."
+        # https://www.tensorflow.org/tutorials/keras/overfit_and_underfit
+        weight_decay = tf.keras.regularizers.l2(0) # TODO I changed it from default: 0.0005
 
         model = tf.keras.Sequential([
             # 1st conv. layer
@@ -121,37 +137,45 @@ class Model:
             #                  1 = bias
             #                 96 = number of output layers
             Conv2D(96, (11, 11),  input_shape=(224, 224, 3), strides=4, activation='relu', 
-                                bias_initializer=zero, kernel_initializer=point_zero_one),
+                                bias_initializer=zero, 
+                                kernel_initializer=point_zero_one, kernel_regularizer=weight_decay),
             BatchNormalization(),
             MaxPooling2D(pool_size=3, strides=2),
 
             # 2nd conv. layer
             # Number of weights is ((5×5×96+1)×256) = 614656
-            Conv2D(256, (5, 5), activation='relu', bias_initializer=one, kernel_initializer=point_zero_one),
+            Conv2D(256, (5, 5), activation='relu', bias_initializer=one, 
+                   kernel_initializer=point_zero_one, kernel_regularizer=weight_decay),
             BatchNormalization(),
             MaxPooling2D(pool_size=3, strides=2),
 
             # 3rd conv. layer
-            Conv2D(384, (3, 3), activation='relu', bias_initializer=zero, kernel_initializer=point_zero_one),
+            Conv2D(384, (3, 3), activation='relu', bias_initializer=zero, 
+                   kernel_initializer=point_zero_one, kernel_regularizer=weight_decay),
 
             # 4th conv. layer
-            Conv2D(384, (3, 3), activation='relu', bias_initializer=one, kernel_initializer=point_zero_one),
+            Conv2D(384, (3, 3), activation='relu', bias_initializer=one, 
+                   kernel_initializer=point_zero_one, kernel_regularizer=weight_decay),
 
             # 5th conv. layer
-            Conv2D(256, (3, 3), activation='relu', bias_initializer=one, kernel_initializer=point_zero_one),
+            Conv2D(256, (3, 3), activation='relu', bias_initializer=one, 
+                   kernel_initializer=point_zero_one, kernel_regularizer=weight_decay),
             BatchNormalization(),
             MaxPooling2D(pool_size=3, strides=2),
             
             Flatten(),
             Dropout(rate=0.5),
 
-            Dense(4096, activation='relu', bias_initializer=one, kernel_initializer=point_zero_one), 
+            Dense(4096, activation='relu', bias_initializer=one, 
+                   kernel_initializer=point_zero_one, kernel_regularizer=weight_decay), 
             Dropout(rate=0.5),
 
-            Dense(4096, activation='relu', bias_initializer=one, kernel_initializer=point_zero_one),
+            Dense(4096, activation='relu', bias_initializer=one, 
+                   kernel_initializer=point_zero_one, kernel_regularizer=weight_decay),
 
             # 1000 categories
-            Dense(1000, activation='softmax', bias_initializer=zero, kernel_initializer=point_zero_one) 
+            Dense(1000, activation='softmax', bias_initializer=zero, 
+                   kernel_initializer=point_zero_one) 
         ])
 
 
@@ -159,10 +183,8 @@ class Model:
         # Also check the ReduceLROnPlateau training callback lower
         model.compile(
                     # [PAPER] We trained our models using stochastic gradient descent with a batch size of 128 examples, momentum of 0.9, and weight decay of 0.0005.
-                    # TODO this didn't work. In tensorboard I see that the kernel and bias distributions went to 0 after 5-10 epochs and the loss didn't decrease almost at all. 
-                    # optimizer=tfa.optimizers.SGDW(weight_decay=0.0005, learning_rate = 0.01, momentum = 0.9),
-
-                    optimizer=tf.keras.optimizers.SGD(learning_rate=0.01, momentum=0.9),  # learning_rate=learning_rate_fn
+                    # note: the weight decay is above. Check each layer.
+                    optimizer=tf.keras.optimizers.SGD(learning_rate=0.01, momentum=0.9), 
 
                     # "categorical_crossentropy": uses a one-hot array to calculate the probability,
                     # "sparse_categorical_crossentropy": uses a category index
@@ -244,7 +266,7 @@ class Alexnet:
         # [PAPER] The heuristic which we followed was to divide the learning rate by 10 when the validation error
         # rate stopped improving with the current learning rate. The learning rate was initialized at 0.01 and
         # reduced three times prior to termination.
-        reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.1, patience=5, min_lr=0.0001)
+        reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.1, patience=1, min_lr=0.0001)
 
         # Create a callback that saves the model's weights
         checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(filepath=Alexnet._get_checkpoint_folder(version),
@@ -275,11 +297,16 @@ class Alexnet:
 
 
 if __name__ == '__main__':
-    current_version = 'v1.2'
+    current_version = 'v1.4'
     network = Alexnet()
-    network.load_data(sample_fraction=0.5)
+    network.load_data(sample_fraction=1)
     network.create_generator()
     network.build_model()
+
+    # The default behaviour should be to resume training for current version, 
+    # so we don't make accidents by overwriting a trained model.
+    if len(sys.argv)==1 or sys.argv[1] is not 'start_new':
+        network.load_model(current_version)
 
     # [PAPER] We trained the network for roughly 90 cycles through the
     # training set of 1.2 million images, which took five to six days on two NVIDIA GTX 580 3GB GPUs"
