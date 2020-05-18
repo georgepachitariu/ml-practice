@@ -314,13 +314,8 @@ if __name__ == '__main__':
 
     
 # Journal (Run log)
-# New record
-# Epoch 30/30:
-# 938/937 [==============================] - 132s 141ms/step - loss: 2.6609 - accuracy: 0.3872 - sparse_top_k_categorical_accuracy: 0.6590 - 
-# val_loss: 5.0430 - val_accuracy: 0.1736 - val_sparse_top_k_categorical_accuracy: 0.3643
+# Best record (Full dataset): Epoch 45/45
+# 9375/9375 [==============================] - ETA: 0s - loss: 2.8965 - accuracy: 0.3651 - sparse_top_k_categorical_accuracy: 0.6244   
+# Epoch 00045: saving model to trained_models/v1.4/cp.ckpt
+# 9375/9375 [==============================] - 1315s 140ms/step - loss: 2.8965 - accuracy: 0.3651 - sparse_top_k_categorical_accuracy: 0.6244 - val_loss: 2.8773 - val_accuracy: 0.3791 - val_sparse_top_k_categorical_accuracy: 0.6313 - lr: 1.0000e-04
 
-# New record:
-# sample_fraction=0.3 - Epoch 30/30
-# 2812/2812 [============================>.] - ETA: 0s - loss: 2.8876 - accuracy: 0.3529 - sparse_top_k_categorical_accuracy: 0.6286
-
-# [...]
