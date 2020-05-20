@@ -2,7 +2,7 @@
 
 I followed the architecture described in the paper: _"ImageNet Classification with Deep Convolutional Neural Networks"_ by Alex Krizhevsky, Ilya Sutskever, Geoffrey E. Hinton. 
 
-My best performance was top-5 error of 38% on the dataset with 1.2 million train images and 1000 categories. The training had 45 cycles over the augmented dataset and it took 16 hours.
+My best performance was top-5 error of 38% on the dataset with 1.2 million train images and 1000 categories. The training had 45 cycles over the augmented dataset and it took 16 hours on a computer with GeForce RTX 2070 with 7 GB memory, 16GB RAM and data stored on SSD.
 
 Please read `alexnet.py` to see the details of the implementation.
 
