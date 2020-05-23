@@ -1,3 +1,5 @@
+from data import Imagenet2012
+import gpu
 import tensorflow as tf
 from tensorflow.keras.layers import Conv2D, BatchNormalization, GlobalAveragePooling2D, Flatten, \
     Dropout, Dense, ReLU, Lambda
@@ -9,66 +11,38 @@ import sys
 import shutil
 
 
-
-# TODO Adapt preprocessing
 class Preprocessing:
+    # TODO def _resize_testing(image: tf.Tensor, label: tf.Tensor) -> (tf.Tensor, tf.Tensor):        
+    
     @staticmethod
-    def _split_dict(t: tf.Tensor) -> (tf.Tensor, tf.Tensor):
-        return t['image'], t['label']
+    # TODO Read [41]
+    # [PAPER] Our implementation for ImageNet follows the practice in [21, 41]. The image is resized with its shorter side 
+    # randomly sampled in [256, 480] for scale augmentation [41]. A 224×224 crop is randomly sampled from an image or its horizontal flip, 
+    # with the per-pixel mean subtracted [21]. The standard color augmentation in [21] is used.
+    def _preprocess(t: tf.Tensor) -> (tf.Tensor, tf.Tensor):
+        image, label = t['image'], t['label']
 
-    # TODO is the type of the input tf.Tensor?
-    @staticmethod
-    def _normalize(image: tf.Tensor, label: tf.Tensor) -> (tf.Tensor, tf.Tensor):
-        # Change values range from [0, 255] to [-0.5, 0.5]
-        image = (image / 255) - 0.5
-        return image, label
+        # resize
+        max_size = tf.random.uniform(shape=[], minval=256, maxval=480, dtype=tf.int32)
+        image = tf.image.resize(image, size=tf.constant((max_size, max_size), preserve_aspect_ratio=True))
 
-    @staticmethod
-    # this method is only used to reverse normalisation so we can display the images
-    def denormalize(image: tf.Tensor) -> tf.Tensor:
-        return (image + 0.5) * 255
-
-    @staticmethod
-    # TODO Resize: In the paper for images they kept the ratio, in mine the images were made square
-    def _resize(image: tf.Tensor, label: tf.Tensor) -> (tf.Tensor, tf.Tensor):
-        image = tf.image.resize(image, size=tf.constant((256, 256)))
-        return image, label
-
-    @staticmethod
-    # TODO TEMPORARY
-    def _resize_testing(image: tf.Tensor, label: tf.Tensor) -> (tf.Tensor, tf.Tensor):
-        image = tf.image.resize(image, size=tf.constant((224, 224)))
-        return image, label
-
-        
-    @staticmethod
-    def _augment(image: tf.Tensor, label: tf.Tensor) -> (tf.Tensor, tf.Tensor):
-        image = tf.image.random_brightness(image, max_delta=0.1)
-        image = tf.image.random_contrast(image, lower=0.9, upper=1.1)
-        image = tf.image.random_crop(image, size = (224, 224, 3))        
+        image = tf.image.random_crop(image, size = (224, 224, 3))
         image = tf.image.random_flip_left_right(image)
 
-        image = tf.clip_by_value(image, -0.5, 0.5)
+        image = tf.image.random_brightness(image, max_delta=0.1)
+        image = tf.image.random_contrast(image, lower=0.9, upper=1.1)
 
-        return image, label
+        # Normalize: scale image to have mean 0 and variance 1.
+        image = tf.image.per_image_standardization(image)
 
-    # TODO
-    # [PAPER] Our implementation for ImageNet follows the practice in [21, 41]. The image is resized with its shorter side ran-
-    # domly sampled in [256, 480] for scale augmentation [41]. A 224×224 crop is randomly sampled from an image or its
-    # horizontal flip, with the per-pixel mean subtracted [21]. The standard color augmentation in [21] is used.
+        return image, label    
+    
     @staticmethod
     def create_generator(ds, for_training, batch_size = 128, buffer_size = 256):
         auto=tf.data.experimental.AUTOTUNE
-
-        ds = ds.map(Preprocessing._split_dict, num_parallel_calls=auto)
-        ds = ds.map(Preprocessing._normalize, num_parallel_calls=auto)
-        if for_training:
-            ds = ds.map(Preprocessing._resize, num_parallel_calls=auto)
-        else:
-            ds = ds.map(Preprocessing._resize_testing, num_parallel_calls=auto)
         
         if for_training:
-            ds = ds.map(Preprocessing._augment, num_parallel_calls=auto)
+            ds = ds.map(Preprocessing._preprocess, num_parallel_calls=auto)
             ds = ds.repeat() # repeat forever
             ds = ds.shuffle(buffer_size=buffer_size)
         
@@ -82,6 +56,12 @@ class Preprocessing:
         #ds = ds.prefetch(buffer_size=1) # using "auto" ends up with OOM during validation step 
 
         return ds
+    
+    @staticmethod
+    # this method is only used to reverse normalisation so we can display the images
+    def denormalize(image: tf.Tensor) -> tf.Tensor:
+        return (image + 0.5) * 255
+
 
 
 # https://www.tensorflow.org/tutorials/customization/custom_layers
@@ -108,7 +88,7 @@ class ResnetIdentityBlock(tf.keras.Model):
     # the number of output filters is always the number of input filters * 4 
     self.conv2c = Conv2D(input_filters * 4, (1, 1))
     self.bn2c = BatchNormalization()
-
+    
 
   def call(self, input_tensor, training=False):
     x = self.conv2a(input_tensor)
@@ -126,7 +106,6 @@ class ResnetIdentityBlock(tf.keras.Model):
     return tf.nn.relu(x)
 
 class Model:
-
     @staticmethod
     def build():
         # TODO [PAPER] We initialize the weights as in [13] and train all plain/residual nets from scratch.
@@ -203,51 +182,11 @@ class Model:
 
         return model
 
-def configure_gpu():
-    # from https://www.tensorflow.org/guide/gpu#limiting_gpu_memory_growth
-    gpus = tf.config.experimental.list_physical_devices('GPU')
-    if gpus:
-        try:
-            # Currently, memory growth needs to be the same across GPUs
-            for gpu in gpus:
-                tf.config.experimental.set_memory_growth(gpu, True)
-                logical_gpus = tf.config.experimental.list_logical_devices('GPU')
-                print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPUs")
-        except RuntimeError as e:
-            # Memory growth must be set before GPUs have been initialized
-            print(e)
-
 class Resnet:
-    def __init__(self):
-        configure_gpu()
-
     def load_data(self, sample_fraction=1, only_one = False):
-        # http://www.image-net.org/challenges/LSVRC/2012/
-        # number_categories = 1000 
-        # 1.2 million train images
-        # 150 000 validation images
-        total_train_data_size = 1.2 * 1000 * 1000 # The alternative of counting this would take ages: len(list(train_data))))
-        total_validation_data_size = 150 * 1000
+        self.train_data_size, self.validation_data_size, self.train_data, self.validation_data = Imagenet2012.load_data(sample_fraction, only_one)
 
-        print("Loading input dataset")
-        train_data, validation_data = Data.load()
-
-        self.train_data_size = int(sample_fraction * total_train_data_size)
-        self.validation_data_size = int(sample_fraction * total_validation_data_size)
-
-        if only_one: 
-            # I use this in testing
-            self.train_data_size = 1
-            self.validation_data_size = 1
-
-        print(f"A fraction of {sample_fraction} was selected from the total data")
-        print(f"Number of examples in the Train dataset is {self.train_data_size} and in the Validation dataset is {self.validation_data_size}")    
-
-        self.train_data = train_data.take(self.train_data_size)
-        self.validation_data = validation_data.take(self.validation_data_size)
-
-    # TODO is batch_size = 128 correct?
-    def create_generator(self, batch_size = 128):
+    def create_generator(self, batch_size = 256):
         print("Creating the generators")
         self.batch_size = batch_size
         self.train_augmented_gen = Preprocessing.create_generator(self.train_data, for_training=True, batch_size = self.batch_size)
@@ -260,15 +199,13 @@ class Resnet:
     def _get_checkpoint_folder(version) -> str:
         # Checkpoint files contain your model's weights
         # https://www.tensorflow.org/tutorials/keras/save_and_load        
-        return 'trained_models/' + version + '/cp.ckpt'
+        return 'trained_models/resnet' + version + '/cp.ckpt'
 
     def train(self, dataset_iterations, version, logs='./logs'):
 
         # [PAPER]The learning rate starts from 0.1 and is divided by 10 when the error plateaus
-        # TODO is min_lr=0.0001 necessary?
         # TODO [PAPER] and the models are trained for up to 60 × 10^4 iterations.\
-        # TODO [PAPER] use a weight decay of 0.0001 and a momentum of 0.9.
-        reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.1, patience=1, min_lr=0.0001)
+        reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.1, patience=1)
 
         # Create a callback that saves the model's weights
         checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(filepath=Resnet._get_checkpoint_folder(version),
@@ -299,6 +236,8 @@ class Resnet:
 
 
 if __name__ == '__main__':
+    gpu.configure_gpu()
+
     current_version = 'v0.1'
     network = Resnet()
     network.load_data(sample_fraction=0.5)
@@ -318,6 +257,8 @@ if __name__ == '__main__':
 # [PAPER] In testing, for comparison studies we adopt the standard 10-crop testing [21]. For best results, we adopt the fully-
 # convolutional form as in [41, 13], and average the scores at multiple scales (images are resized such that the shorter
 # side is in {224, 256, 384, 480, 640}).
+
+# TODO [PAPER] use a weight decay of 0.0001
 
 
     
