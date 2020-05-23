@@ -1,44 +1,16 @@
 import tensorflow as tf
-from tensorflow.keras.layers import Conv2D, BatchNormalization, MaxPooling2D, Flatten, Dropout, Dense
+from tensorflow.keras.layers import Conv2D, BatchNormalization, GlobalAveragePooling2D, Flatten, \
+    Dropout, Dense, ReLU, Lambda
 import tensorflow_addons as tfa
-import tensorflow_datasets as tfds
 import pickle, urllib
 from datetime import datetime
 import os
 import sys
 import shutil
 
-class Data:
-    @staticmethod
-    def load() -> (tf.data.Dataset, tf.data.Dataset):
-        train_ds, validation_ds = tfds.load(name="imagenet2012", split=['train', 'validation'],
-                                            data_dir='/home/gpachitariu/SSD/data')
-        
-        Data.test_assumptions_of_the_input(train_ds)
-
-        return train_ds, validation_ds
-    
-    # The ML algorithm has a few assumptions of the input. We test the assumptions on the first example.
-    # If the input data doesn't follow the assumptions training, testing & predicting will fail because 
-    # the algorithm is "calibrated" the wrong way.
-    @staticmethod
-    def test_assumptions_of_the_input(train_ds):
-        for d in train_ds.take(1):
-            image = d['image'].numpy()
-            # The image has 3 dimensions (height, width, color_channels). Also color_channels=3
-            assert len(image.shape) == 3 and image.shape[2] == 3
-            # The range of values for pixels are [0, 255]
-            assert image.min() == 0
-            assert image.max() == 255
-
-    @staticmethod
-    def load_labelid_to_names():
-        # Hacky way of getting the class names because I couldn't find them in the tensorflow dataset library.
-        # More details here: https://gist.github.com/yrevar/942d3a0ac09ec9e5eb3a
-        return pickle.load(urllib.request.urlopen('https://gist.githubusercontent.com/yrevar/6135f1bd8dcf2e0cc683/raw/'+
-                                                  'd133d61a09d7e5a3b36b8c111a8dd5c4b5d560ee/imagenet1000_clsid_to_human.pkl') )
 
 
+# TODO Adapt preprocessing
 class Preprocessing:
     @staticmethod
     def _split_dict(t: tf.Tensor) -> (tf.Tensor, tf.Tensor):
@@ -80,6 +52,10 @@ class Preprocessing:
 
         return image, label
 
+    # TODO
+    # [PAPER] Our implementation for ImageNet follows the practice in [21, 41]. The image is resized with its shorter side ran-
+    # domly sampled in [256, 480] for scale augmentation [41]. A 224×224 crop is randomly sampled from an image or its
+    # horizontal flip, with the per-pixel mean subtracted [21]. The standard color augmentation in [21] is used.
     @staticmethod
     def create_generator(ds, for_training, batch_size = 128, buffer_size = 256):
         auto=tf.data.experimental.AUTOTUNE
@@ -103,87 +79,117 @@ class Preprocessing:
         # While the model is executing training step s, the input pipeline is reading the data for step s+1. 
         # Doing so reduces the step time to the maximum (as opposed to the sum) of the training and the time it takes to extract the data.
         # https://www.tensorflow.org/guide/data_performance
-        ds = ds.prefetch(buffer_size=1) # using "auto" ends up with OOM during validation step 
+        #ds = ds.prefetch(buffer_size=1) # using "auto" ends up with OOM during validation step 
 
         return ds
+
+
+# https://www.tensorflow.org/tutorials/customization/custom_layers
+class ResnetIdentityBlock(tf.keras.Model):
+  def __init__(self, input_filters, shortcuts_across_2_sizes=False, kernel_size=(3, 3)):
+    super(ResnetIdentityBlock, self).__init__(name='')
+
+    # [PAPER] (B) The projection shortcut in Eqn.(2) is used to match dimensions (done by 1×1 convolutions). 
+    # For both options, when the shortcuts go across feature maps of two sizes, 
+    # they are performed with a stride of 2.    
+    if shortcuts_across_2_sizes:
+        strides = 2
+        self.shortcut_layer = Conv2D(input_filters*4, (1, 1), strides=strides) # size projection
+    else:
+        strides = 1
+        self.shortcut_layer = Lambda(lambda x: x) # identity mapping
+
+    self.conv2a = Conv2D(input_filters, (1, 1), strides=strides)
+    self.bn2a = BatchNormalization()
+
+    self.conv2b = Conv2D(input_filters, kernel_size, padding='same')
+    self.bn2b = BatchNormalization()
+
+    # the number of output filters is always the number of input filters * 4 
+    self.conv2c = Conv2D(input_filters * 4, (1, 1))
+    self.bn2c = BatchNormalization()
+
+
+  def call(self, input_tensor, training=False):
+    x = self.conv2a(input_tensor)
+    x = self.bn2a(x, training=training)
+    x = tf.nn.relu(x)
+
+    x = self.conv2b(x)
+    x = self.bn2b(x, training=training)
+    x = tf.nn.relu(x)
+
+    x = self.conv2c(x)
+    x = self.bn2c(x, training=training)
+
+    x += self.shortcut_layer(input_tensor)
+    return tf.nn.relu(x)
 
 class Model:
 
     @staticmethod
     def build():
-
-        # Following the paper: "We initialized the weights in each layer from a zero-mean Gaussian distribution with standard deviation 0.01."
-        point_zero_one = tf.compat.v1.keras.initializers.RandomNormal(mean=0.0, stddev=0.01)
-
-        # "We initialized the neuron biases in the second, fourth, and fifth convolutional layers,
-        # as well as in the fully-connected hidden layers, with the constant 1. This initialization accelerates
-        # the early stages of learning by providing the ReLUs with positive inputs. We initialized the neuron
-        # biases in the remaining layers with the constant 0."
-
-        # I put this to 0.1 instead of 1, because with 1 it converges very slow in the beginning, (like the bias is so big that it "shadows" the true value)
-        one = tf.compat.v2.constant_initializer(value=0.1) 
-        zero = tf.compat.v2.constant_initializer(value=0)
-
+        # TODO [PAPER] We initialize the weights as in [13] and train all plain/residual nets from scratch.
+        #point_zero_one = tf.compat.v1.keras.initializers.RandomNormal(mean=0.0, stddev=0.01)
+        
         # "L2 regularization is also called weight decay in the context of neural networks. 
         # Don't let the different name confuse you: weight decay is mathematically the exact same as L2 regularization."
         # https://www.tensorflow.org/tutorials/keras/overfit_and_underfit
-        weight_decay = tf.keras.regularizers.l2(0) # TODO I changed it from default: 0.0005
+        # TODO
+        #weight_decay = tf.keras.regularizers.l2(0)
 
         model = tf.keras.Sequential([
-            # 1st conv. layer
-            # Number of weights is ((11×11×3+1)×96) = 34944 where:
+            # conv1
+            # TODO Number of weights is ((11×11×3+1)×96) = 34944 where:
             #            11 * 11 = convolution filter size
             #                  3 = number of input layers 
             #                  1 = bias
             #                 96 = number of output layers
-            Conv2D(96, (11, 11),  input_shape=(224, 224, 3), strides=4, activation='relu', 
-                                bias_initializer=zero, 
-                                kernel_initializer=point_zero_one, kernel_regularizer=weight_decay),
+            Conv2D(64, (7, 7),  input_shape=(224, 224, 3), strides=2, 
+                   # TODO are the next correct?
+                   # bias_initializer=zero, 
+                   # kernel_initializer=point_zero_one, kernel_regularizer=weight_decay
+                   ),
             BatchNormalization(),
-            MaxPooling2D(pool_size=3, strides=2),
+            ReLU(),
 
-            # 2nd conv. layer
-            # Number of weights is ((5×5×96+1)×256) = 614656
-            Conv2D(256, (5, 5), activation='relu', bias_initializer=one, 
-                   kernel_initializer=point_zero_one, kernel_regularizer=weight_decay),
-            BatchNormalization(),
-            MaxPooling2D(pool_size=3, strides=2),
+            # conv2_x
+            # TODO Number of weights for 1 block is
+            ResnetIdentityBlock(input_filters=64, shortcuts_across_2_sizes=True),
+            ResnetIdentityBlock(input_filters=64),
+            ResnetIdentityBlock(input_filters=64),
 
-            # 3rd conv. layer
-            Conv2D(384, (3, 3), activation='relu', bias_initializer=zero, 
-                   kernel_initializer=point_zero_one, kernel_regularizer=weight_decay),
+            # conv3_x
+            ResnetIdentityBlock(input_filters=128, shortcuts_across_2_sizes=True),
+            ResnetIdentityBlock(input_filters=128),
+            ResnetIdentityBlock(input_filters=128),
+            ResnetIdentityBlock(input_filters=128),
 
-            # 4th conv. layer
-            Conv2D(384, (3, 3), activation='relu', bias_initializer=one, 
-                   kernel_initializer=point_zero_one, kernel_regularizer=weight_decay),
+            # conv4_x
+            ResnetIdentityBlock(input_filters=256, shortcuts_across_2_sizes=True),
+            ResnetIdentityBlock(input_filters=256),
+            ResnetIdentityBlock(input_filters=256),
 
-            # 5th conv. layer
-            Conv2D(256, (3, 3), activation='relu', bias_initializer=one, 
-                   kernel_initializer=point_zero_one, kernel_regularizer=weight_decay),
-            BatchNormalization(),
-            MaxPooling2D(pool_size=3, strides=2),
-            
+            ResnetIdentityBlock(input_filters=256),
+            ResnetIdentityBlock(input_filters=256),
+            ResnetIdentityBlock(input_filters=256),
+
+            # conv5_x
+            ResnetIdentityBlock(input_filters=512, shortcuts_across_2_sizes=True),
+            ResnetIdentityBlock(input_filters=512),
+            ResnetIdentityBlock(input_filters=512),
+
+            GlobalAveragePooling2D(),
+
             Flatten(),
-            Dropout(rate=0.5),
-
-            Dense(4096, activation='relu', bias_initializer=one, 
-                   kernel_initializer=point_zero_one, kernel_regularizer=weight_decay), 
-            Dropout(rate=0.5),
-
-            Dense(4096, activation='relu', bias_initializer=one, 
-                   kernel_initializer=point_zero_one, kernel_regularizer=weight_decay),
-
             # 1000 categories
-            Dense(1000, activation='softmax', bias_initializer=zero, 
-                   kernel_initializer=point_zero_one) 
+            Dense(1000, activation='softmax', 
+                #bias_initializer=zero, kernel_initializer=point_zero_one
+                ) 
         ])
 
-
-        # [PAPER] "We used an equal learning rate for all layers, which we adjusted manually throughout training."
         # Also check the ReduceLROnPlateau training callback lower
         model.compile(
-                    # [PAPER] We trained our models using stochastic gradient descent with a batch size of 128 examples, momentum of 0.9, and weight decay of 0.0005.
-                    # note: the weight decay is above. Check each layer.
                     optimizer=tf.keras.optimizers.SGD(learning_rate=0.01, momentum=0.9), 
 
                     # "categorical_crossentropy": uses a one-hot array to calculate the probability,
@@ -196,10 +202,6 @@ class Model:
                              ])
 
         return model
-
-# TODO From paper: "At test time, the network makes a prediction by extracting five 224 × 224 patches
-# (the four corner patches and the center patch) as well as their horizontal reflections (hence ten patches in all),
-# and averaging the predictions made by the network’s softmax layer on the ten patches
 
 def configure_gpu():
     # from https://www.tensorflow.org/guide/gpu#limiting_gpu_memory_growth
@@ -215,9 +217,7 @@ def configure_gpu():
             # Memory growth must be set before GPUs have been initialized
             print(e)
 
-class Alexnet:
-    
-
+class Resnet:
     def __init__(self):
         configure_gpu()
 
@@ -246,6 +246,7 @@ class Alexnet:
         self.train_data = train_data.take(self.train_data_size)
         self.validation_data = validation_data.take(self.validation_data_size)
 
+    # TODO is batch_size = 128 correct?
     def create_generator(self, batch_size = 128):
         print("Creating the generators")
         self.batch_size = batch_size
@@ -263,13 +264,14 @@ class Alexnet:
 
     def train(self, dataset_iterations, version, logs='./logs'):
 
-        # [PAPER] The heuristic which we followed was to divide the learning rate by 10 when the validation error
-        # rate stopped improving with the current learning rate. The learning rate was initialized at 0.01 and
-        # reduced three times prior to termination.
+        # [PAPER]The learning rate starts from 0.1 and is divided by 10 when the error plateaus
+        # TODO is min_lr=0.0001 necessary?
+        # TODO [PAPER] and the models are trained for up to 60 × 10^4 iterations.\
+        # TODO [PAPER] use a weight decay of 0.0001 and a momentum of 0.9.
         reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.1, patience=1, min_lr=0.0001)
 
         # Create a callback that saves the model's weights
-        checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(filepath=Alexnet._get_checkpoint_folder(version),
+        checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(filepath=Resnet._get_checkpoint_folder(version),
                                                  save_weights_only=True, verbose=1)
 
         # Create a callback that logs the progress so you can visualize it in Tensorboard
@@ -292,30 +294,38 @@ class Alexnet:
     def load_model(self, version, path=None):
         self.build_model()
         if path is None:
-            path = Alexnet._get_checkpoint_folder(version)
+            path = Resnet._get_checkpoint_folder(version)
         self.model.load_weights(path)
 
 
 if __name__ == '__main__':
-    current_version = 'v1.4'
-    network = Alexnet()
-    network.load_data(sample_fraction=1)
-    network.create_generator()
+    current_version = 'v0.1'
+    network = Resnet()
+    network.load_data(sample_fraction=0.5)
+    network.create_generator(batch_size=32)
     network.build_model()
+    
+    print(network.model.summary())
 
     # The default behaviour should be to resume training for current version, 
     # so we don't make accidents by overwriting a trained model.
-    if len(sys.argv)==1 or sys.argv[1] is not 'start_new':
-        network.load_model(current_version)
+    #if len(sys.argv)==1 or sys.argv[1] is not 'start_new':
+    #    network.load_model(current_version)
 
-    # [PAPER] We trained the network for roughly 90 cycles through the
-    # training set of 1.2 million images, which took five to six days on two NVIDIA GTX 580 3GB GPUs"
-    network.train(dataset_iterations=45, version=current_version)
+    network.train(dataset_iterations=20, version=current_version)
+
+# TODO List
+# [PAPER] In testing, for comparison studies we adopt the standard 10-crop testing [21]. For best results, we adopt the fully-
+# convolutional form as in [41, 13], and average the scores at multiple scales (images are resized such that the shorter
+# side is in {224, 256, 384, 480, 640}).
+
 
     
 # Journal (Run log)
-# Best record (Full dataset): Epoch 45/45
-# 9375/9375 [==============================] - ETA: 0s - loss: 2.8965 - accuracy: 0.3651 - sparse_top_k_categorical_accuracy: 0.6244   
-# Epoch 00045: saving model to trained_models/v1.4/cp.ckpt
-# 9375/9375 [==============================] - 1315s 140ms/step - loss: 2.8965 - accuracy: 0.3651 - sparse_top_k_categorical_accuracy: 0.6244 - val_loss: 2.8773 - val_accuracy: 0.3791 - val_sparse_top_k_categorical_accuracy: 0.6313 - lr: 1.0000e-04
+
+# Epoch 9/10
+# 3750/3750 [==============================] - 841s 224ms/step - loss: 3.8735 - accuracy: 0.2156 - sparse_top_k_categorical_accuracy: 0.4435 - 
+#                                                    val_loss: 4.3020 - val_accuracy: 0.1781 - val_sparse_top_k_categorical_accuracy: 0.3864 - lr: 0.0100
+
+
 
