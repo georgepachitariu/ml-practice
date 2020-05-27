@@ -48,8 +48,6 @@ class Preprocessing:
         # Normalize: change values range from [0, 255] to [-0.5, 0.5]
         image = (image / 255) - 0.5
 
-        #image = tf.image.per_image_standardization(image)
-
         image = tf.image.random_brightness(image, max_delta=0.1)
         image = tf.image.random_contrast(image, lower=0.9, upper=1.1)        
 
