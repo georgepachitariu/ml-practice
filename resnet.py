@@ -57,7 +57,8 @@ class Preprocessing:
         height = tf.shape(image)[0] 
         width = tf.shape(image)[1]
 
-        s = []
+        s_images = []
+        s_labels = []
         for im in [image, 
                    tf.image.flip_left_right(image)]:
             for start_height, start_width in [[0, 0],
@@ -66,28 +67,36 @@ class Preprocessing:
                                             [height-224, 0],
                                             [height/2-224/2, width/2-224/2]
                                             ]:
-                s.append(tf.image.crop_to_bounding_box(image, offset_height=cast(start_height, tf.int32), 
+                new_image_crop = tf.image.crop_to_bounding_box(image, offset_height=cast(start_height, tf.int32), 
                                                        offset_width=cast(start_width, tf.int32), 
-                                                       target_height=224, target_width=224))    
-        return tf.stack(s), label
+                                                       target_height=224, target_width=224)
+                s_images.append(new_image_crop)
+                s_labels.append(label)
+
+        return tf.stack(s_images), tf.stack(s_labels)
     
     @staticmethod
     def create_generator(ds, for_training, batch_size = 128, buffer_size = 256):
         auto=tf.data.experimental.AUTOTUNE
         
         if for_training:
-            ds = ds.repeat() # repeat forever
+            ds = ds.repeat()
             ds = ds.shuffle(buffer_size=buffer_size)
 
         ds = ds.map(Preprocessing._preprocess_both, num_parallel_calls=auto)
 
         if for_training: 
             ds = ds.map(Preprocessing._preprocess_train, num_parallel_calls=auto)    
+            ds = ds.batch(batch_size)
         else:
+            # all crops per image need to be in the same batch,
+            # because later I do "Tensor segmentation" based on the labels in the current batch.
+            # https://www.tensorflow.org/api_docs/python/tf/math#Segmentations
             ds = ds.map(Preprocessing._preprocess_test, num_parallel_calls=auto)
-        
-        if batch_size > 1 and for_training:
-            ds = ds.batch(batch_size) 
+            ds = ds.unbatch() #  #size: ((10,height,width,channels), (10, 1), (10)); (stacks of 10 crops)
+            # TODO I don't know why batch=300 works. It should be too big for memory.
+            ds = ds.batch(300) # batch/stack them in multiples of 10 so that more of them fit the GPU
+             
 
         # Prefetching overlaps the preprocessing and model execution of a training step. 
         # While the model is executing training step s, the input pipeline is reading the data for step s+1. 
@@ -216,13 +225,16 @@ class Resnet(tf.keras.Model):
 
     def test_step(self, data):
         data = data_adapter.expand_1d(data)
-        # each image_batch has 10 crops from a single validation image
-        image_batch, y, sample_weight = data_adapter.unpack_x_y_sample_weight(data)
+        images_crops, y, sample_weight = data_adapter.unpack_x_y_sample_weight(data)
 
-        y_pred_batch=self.model(image_batch , training=False)
-        y_pred = tf.math.reduce_mean(y_pred_batch, axis=0, keepdims=True)
-        y = tf.expand_dims(y, 0)
-        # y_pred and y are now a batch with 1 element
+        total_number_crops = tf.shape(images_crops)[0]
+        distinct_images = total_number_crops / 10 # there are 10 crops per image
+        segments = tf.repeat(tf.range(0, distinct_images, 1, dtype=tf.int32), repeats=10)
+
+        y_pred_crops=self.model(images_crops, training=False)
+        # I segment based on the label to get the mean score per 10 crops per image. Check the testing generator as well.
+        y_pred = tf.math.segment_mean(y_pred_crops, segments)
+        y = tf.math.segment_max(y, segments) # I segment y based on same rules to have same segmentation of y_pred and y
 
         # Updates stateful loss metrics.
         self.compiled_loss(
@@ -278,7 +290,7 @@ class Resnet(tf.keras.Model):
 def main():
     gpu.configure_gpu()
 
-    train_data_size, validation_data_size, train_data, validation_data = Imagenet2012.load_data(sample_fraction=0.0003, only_one=False)
+    train_data_size, validation_data_size, train_data, validation_data = Imagenet2012.load_data(sample_fraction=0.1, only_one=False)
     
     resnet = Resnet(version = 'v1.0')
     resnet.compile()
@@ -306,6 +318,9 @@ if __name__ == '__main__':
 # TODO [PAPER] use a weight decay of 0.0001
     
 # Journal (Run log)
+
+# Train time: 120000 / 16 = 7500 GPU steps
+# Validation time: 15000 * 1 (10 crops) GPU steps 
 
 # New record:
 # sample_fraction=0.5: Epoch 15/20
