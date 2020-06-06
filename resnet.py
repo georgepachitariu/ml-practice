@@ -70,7 +70,7 @@ class Preprocessing:
         return tf.stack(s_images), tf.stack(s_labels)
     
     @staticmethod
-    def create_generator(ds, for_training, batch_size = 128, buffer_size = 256):
+    def create_generator(ds, for_training, batch_size = 128, buffer_size = 64):
         auto=tf.data.experimental.AUTOTUNE
         
         if for_training:
@@ -145,10 +145,11 @@ class ResnetIdentityBlock(tf.keras.Model):
         return tf.nn.relu(x)
 
 class Resnet(tf.keras.Model):
-    def __init__(self, version = 'v1.0'):
+    def __init__(self, version, start_date):
         super(Resnet, self).__init__(name='')
     
         self.version = version
+        self.start_date = start_date
 
         # TODO [PAPER] We initialize the weights as in [13] and train all plain/residual nets from scratch.
         #point_zero_one = tf.compat.v1.keras.initializers.RandomNormal(mean=0.0, stddev=0.01)
@@ -168,10 +169,7 @@ class Resnet(tf.keras.Model):
             #                  3 = number of channels (input layers)
             #                  1 = bias
             #                 64 = number of output layers
-            Conv2D(64, (7, 7),  strides=2, # input_shape=(224, 224, 3)
-                   # TODO are the next correct?
-                   # bias_initializer=zero, kernel_initializer=point_zero_one, kernel_regularizer=weight_decay
-                   ),
+            Conv2D(64, (7, 7),  strides=2, input_shape=(224, 224, 3), padding='same'),
             BatchNormalization(),
             ReLU(),
 
@@ -229,10 +227,10 @@ class Resnet(tf.keras.Model):
         self.compiled_metrics.update_state(y, y_pred, sample_weight)
         return {m.name: m.result() for m in self.metrics}
 
-    def compile(self):
+    def compile(self, learning_rate=0.1):
         super().compile(
             # Also check the ReduceLROnPlateau training callback lower in script.
-            optimizer=tf.keras.optimizers.SGD(learning_rate=0.01, momentum=0.9), 
+            optimizer=tf.keras.optimizers.SGD(learning_rate=learning_rate, momentum=0.9),
             # "categorical_crossentropy": uses a one-hot array to calculate the probability,
             # "sparse_categorical_crossentropy": uses a category index
             # source: https://stackoverflow.com/questions/58565394/what-is-the-difference-between-sparse-categorical-crossentropy-and-categorical-c
@@ -250,10 +248,10 @@ class Resnet(tf.keras.Model):
 
         # Callback that saves the model's weights: https://www.tensorflow.org/tutorials/keras/save_and_load
         checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(filepath=Resnet._get_checkpoint_folder(self.version),
-                                                 save_weights_only=True, verbose=1)
+                                                 save_weights_only=False, verbose=1)
 
         # Callback that logs the progress so you can visualize it in Tensorboard.
-        log_dir = logs1 + '/fit/' + datetime.now().strftime('%Y%m%d-%H%M%S')
+        log_dir = logs1 + '/fit/' + self.version + '_' + self.start_date
         tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1)
 
         print("Starting the training")
@@ -264,10 +262,16 @@ class Resnet(tf.keras.Model):
                               callbacks=[reduce_lr, checkpoint_callback, tensorboard_callback]
                               )
 
-    def load_weights(self, version, path=None):
-        if path is None:
-            path = Resnet._get_checkpoint_folder(version)
-        self.model.load_weights(path)
+    def load_weights(self, version=None):         
+        if version is None:
+            version = self.version
+        
+        path = Resnet._get_checkpoint_folder(version)
+        if os.path.isdir(path):
+            super().load_weights(path)
+            return True
+        else: 
+            return False
 
 
 def main():
@@ -275,8 +279,12 @@ def main():
 
     train_data_size, validation_data_size, train_data, validation_data = Imagenet2012.load_data(sample_fraction=0.001, only_one=False)
     
-    resnet = Resnet(version = 'v1.0')
-    resnet.compile()
+    r = Resnet(version='v2.0', start_date="2020-May-05")
+    if not r.load_weights():
+        r.compile(learning_rate=0.05)
+        r.build(input_shape=(None, 224, 224, 3))
+    
+    print(r.model.summary())
 
     batch_size=16
     print("Creating the generators")
@@ -285,10 +293,10 @@ def main():
     
     # TODO: The default behaviour should be to resume training for current version, 
     # so we don't make accidents by overwriting a trained model.
-    # if len(sys.argv)==1 or sys.argv[1] is not 'start_new':
-    #    network.load_model(current_version)
+    #if len(sys.argv)==1 or sys.argv[1] is not 'start_new':
+    #    r.load_weights()
 
-    history = resnet.fit(x=train_augmented_gen,
+    history = r.fit(x=train_augmented_gen,
                          validation_data=validation_gen,
                          dataset_iterations = 20,                   
                          # steps_per_epoch = total number of steps (batches of samples) before declaring one epoch finished and starting the next epoch
@@ -298,6 +306,12 @@ if __name__ == '__main__':
     main()
 
 # Journal (Run log)
+
+# New record (full dataset):
+# 27 epochs
+# 9134s 122ms/step - loss: 1.3702 - accuracy: 0.6784 - sparse_top_k_categorical_accuracy: 0.8632 - 
+#                val_loss: 1.4805 - val_accuracy: 0.6994 - val_sparse_top_k_categorical_accuracy: 0.8809 - lr: 1.0000e-05
+
 
 # Train time: 120000 / 16 = 7500 GPU steps
 # Validation time: 15000 * 1 (10 crops) GPU steps 
