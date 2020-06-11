@@ -275,7 +275,7 @@ def main():
 
     version='v2.0'
     initial_epoch=0
-    learning_rate=0.025
+    learning_rate=0.03
 
     path = Resnet._get_checkpoint_folder(version)
     r = Resnet(version=version, start_date="2020-May-05")
@@ -288,7 +288,7 @@ def main():
     
     print(r.model.summary())
 
-    batch_size=16
+    batch_size=32
     print("Creating the generators")
     train_data_size, validation_data_size, train_data, validation_data = Imagenet2012.load_data(sample_fraction=1, only_one=False)
     train_augmented_gen = Preprocessing.create_generator(train_data, for_training=True, batch_size=batch_size)
