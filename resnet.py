@@ -90,7 +90,7 @@ class Preprocessing:
             # because later I do Tensor segmentation based on the labels in the current batch.
             # https://www.tensorflow.org/api_docs/python/tf/math#Segmentations
             ds = ds.map(Preprocessing._prepare_testing_10crops, num_parallel_calls=auto)
-            ds = ds.unbatch().batch(10) # Batch them in a multiple of 10 so that more of them fit the GPU
+            ds = ds.unbatch().batch(30) # Batch them in a multiple of 10 so that more of them fit the GPU
 
         # Prefetching overlaps the preprocessing and model execution of a training step. 
         # While the model is executing training step s, the input pipeline is reading the data for step s+1. 
@@ -290,7 +290,7 @@ def main():
 
     batch_size=16
     print("Creating the generators")
-    train_data_size, validation_data_size, train_data, validation_data = Imagenet2012.load_data(sample_fraction=0.001, only_one=False)
+    train_data_size, validation_data_size, train_data, validation_data = Imagenet2012.load_data(sample_fraction=1, only_one=False)
     train_augmented_gen = Preprocessing.create_generator(train_data, for_training=True, batch_size=batch_size)
     validation_gen = Preprocessing.create_generator(validation_data, for_training=False, 
                     batch_size=None # batch_size is treated differently during validations
