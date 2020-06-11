@@ -70,15 +70,17 @@ class Preprocessing:
         return tf.stack(s_images), tf.stack(s_labels)
     
     @staticmethod
-    def create_generator(ds, for_training, batch_size = 128, buffer_size = 64):
+    def create_generator(ds, for_training, batch_size, buffer_size = 64):
         auto=tf.data.experimental.AUTOTUNE
         
         if for_training:
             ds = ds.repeat()
             ds = ds.shuffle(buffer_size=buffer_size)
 
-        # Normalize: change values range from [0, 255] to [-0.5, 0.5]
-        ds = ds.map(lambda r: (r['image']/255-0.5, r['label']), num_parallel_calls=auto)
+        # Normalize & change the data type: change values range from [0, 255] to [-0.5, 0.5]
+        ds = ds.map(lambda r: (tf.dtypes.cast(r['image']/255-0.5, dtype=tf.float32), 
+                               r['label']), 
+                    num_parallel_calls=auto)
 
         if for_training: 
             ds = ds.map(Preprocessing._augment_train, num_parallel_calls=auto)    
@@ -88,7 +90,7 @@ class Preprocessing:
             # because later I do Tensor segmentation based on the labels in the current batch.
             # https://www.tensorflow.org/api_docs/python/tf/math#Segmentations
             ds = ds.map(Preprocessing._prepare_testing_10crops, num_parallel_calls=auto)
-            ds = ds.unbatch().batch(30) # Batch them in a multiple of 10 so that more of them fit the GPU
+            ds = ds.unbatch().batch(10) # Batch them in a multiple of 10 so that more of them fit the GPU
 
         # Prefetching overlaps the preprocessing and model execution of a training step. 
         # While the model is executing training step s, the input pipeline is reading the data for step s+1. 
@@ -239,17 +241,17 @@ class Resnet(tf.keras.Model):
 
     @staticmethod
     def _get_checkpoint_folder(version) -> str:
-        return 'trained_models/resnet' + version + '/cp.ckpt'
+        return 'trained_models/resnet_' + version + "/{epoch:02d}_{lr:.7f}"
 
-    def fit(self, x, validation_data, dataset_iterations, steps_per_epoch, logs1='./logs'):
+    def fit(self, x, validation_data, dataset_iterations, initial_epoch, steps_per_epoch, logs1='./logs'):
         # [PAPER]The learning rate starts from 0.1 and is divided by 10 when the error plateaus
         # TODO [PAPER] and the models are trained for up to 60 × 10^4 iterations.\
         reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.1, patience=1)
 
         # Callback that saves the model's weights: https://www.tensorflow.org/tutorials/keras/save_and_load
-        checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(filepath=Resnet._get_checkpoint_folder(self.version),
-                                                 save_weights_only=False, verbose=1)
-
+        checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(filepath=Resnet._get_checkpoint_folder(self.version),                                                  
+                                                 save_weights_only=True, verbose=1)  #save_best_only=False
+        
         # Callback that logs the progress so you can visualize it in Tensorboard.
         log_dir = logs1 + '/fit/' + self.version + '_' + self.start_date
         tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1)
@@ -257,47 +259,46 @@ class Resnet(tf.keras.Model):
         print("Starting the training")
         return super().fit(x=x,
                               validation_data = validation_data,                            
+                              initial_epoch = initial_epoch,
                               epochs = dataset_iterations,
                               steps_per_epoch = steps_per_epoch,
                               callbacks=[reduce_lr, checkpoint_callback, tensorboard_callback]
                               )
 
-    def load_weights(self, version=None):         
-        if version is None:
-            version = self.version
+    def load_weights(self, version, epoch, learning_rate):     
+        path = Resnet._get_checkpoint_folder(version).format(epoch=epoch, lr=learning_rate)
+        super().load_weights(path) # fail if folder doesn't exist
         
-        path = Resnet._get_checkpoint_folder(version)
-        if os.path.isdir(path):
-            super().load_weights(path)
-            return True
-        else: 
-            return False
-
 
 def main():
     gpu.configure_gpu()
 
-    train_data_size, validation_data_size, train_data, validation_data = Imagenet2012.load_data(sample_fraction=0.001, only_one=False)
+    version='v2.0'
+    initial_epoch=0
+    learning_rate=0.025
+
+    path = Resnet._get_checkpoint_folder(version)
+    r = Resnet(version=version, start_date="2020-May-05")
+    r.compile(learning_rate=learning_rate)
+    r.build(input_shape=(None, 224, 224, 3))
     
-    r = Resnet(version='v2.0', start_date="2020-May-05")
-    if not r.load_weights():
-        r.compile(learning_rate=0.05)
-        r.build(input_shape=(None, 224, 224, 3))
+    resume_training=False
+    if resume_training:
+        r.load_weights(version, epoch=initial_epoch, learning_rate=learning_rate)
     
     print(r.model.summary())
 
     batch_size=16
     print("Creating the generators")
-    train_augmented_gen = Preprocessing.create_generator(train_data, for_training=True, batch_size = batch_size)
-    validation_gen = Preprocessing.create_generator(validation_data, for_training=False)
+    train_data_size, validation_data_size, train_data, validation_data = Imagenet2012.load_data(sample_fraction=0.001, only_one=False)
+    train_augmented_gen = Preprocessing.create_generator(train_data, for_training=True, batch_size=batch_size)
+    validation_gen = Preprocessing.create_generator(validation_data, for_training=False, 
+                    batch_size=None # batch_size is treated differently during validations
+                    )
     
-    # TODO: The default behaviour should be to resume training for current version, 
-    # so we don't make accidents by overwriting a trained model.
-    #if len(sys.argv)==1 or sys.argv[1] is not 'start_new':
-    #    r.load_weights()
-
     history = r.fit(x=train_augmented_gen,
                          validation_data=validation_gen,
+                         initial_epoch = initial_epoch,
                          dataset_iterations = 20,                   
                          # steps_per_epoch = total number of steps (batches of samples) before declaring one epoch finished and starting the next epoch
                          steps_per_epoch=train_data_size / batch_size)    
