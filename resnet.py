@@ -107,6 +107,15 @@ class Preprocessing:
         return (image + 0.5) * 255, label
 
 
+class Weights:
+    @staticmethod
+    def init():
+        # Following [13] I initialized the weights zero-mean Gaussian distribution whith standard deviation (std) = sqrt(2/n) 
+        #   and bias=0, where n=number of input units in the weight tensor.
+        # "A proper initialization method should avoid reducing or magnifying the magnitudes of input signals exponentially."
+        return tf.keras.initializers.VarianceScaling(scale=2.0, mode='fan_in', distribution='truncated_normal')
+
+Weights.init
 class ResnetIdentityBlock(tf.keras.Model):
     def __init__(self, input_filters, shortcuts_across_2_sizes=False, kernel_size=(3, 3)):
         super(ResnetIdentityBlock, self).__init__(name='')
@@ -115,19 +124,23 @@ class ResnetIdentityBlock(tf.keras.Model):
         # For both options, when the shortcuts go across feature maps of two sizes, they are performed with a stride of 2.    
         if shortcuts_across_2_sizes:
             strides = 2
-            self.shortcut_layer = Conv2D(input_filters*4, (1, 1), strides=strides) # size projection
+            self.shortcut_layer = Conv2D(input_filters*4, (1, 1), strides=strides, 
+                kernel_initializer=Weights.init(), bias_initializer='zeros') # size projection
         else:
             strides = 1
             self.shortcut_layer = Lambda(lambda x: x) # identity mapping
 
-        self.conv2a = Conv2D(input_filters, (1, 1), strides=strides)
+        self.conv2a = Conv2D(input_filters, (1, 1), strides=strides,
+                             kernel_initializer=Weights.init(), bias_initializer='zeros')
         self.bn2a = BatchNormalization()
 
-        self.conv2b = Conv2D(input_filters, kernel_size, padding='same')
+        self.conv2b = Conv2D(input_filters, kernel_size, padding='same',
+                             kernel_initializer=Weights.init(), bias_initializer='zeros')
         self.bn2b = BatchNormalization()
 
         # number of output filters = number of input filters * 4 
-        self.conv2c = Conv2D(input_filters * 4, (1, 1))
+        self.conv2c = Conv2D(input_filters * 4, (1, 1),
+                             kernel_initializer=Weights.init(), bias_initializer='zeros')
         self.bn2c = BatchNormalization()
 
 
@@ -153,16 +166,11 @@ class Resnet(tf.keras.Model):
         self.version = version
         self.start_date = start_date
 
-        # TODO [PAPER] We initialize the weights as in [13] and train all plain/residual nets from scratch.
-        #point_zero_one = tf.compat.v1.keras.initializers.RandomNormal(mean=0.0, stddev=0.01)
-        
         # "L2 regularization is also called weight decay in the context of neural networks. 
         # Don't let the different name confuse you: weight decay is mathematically the exact same as L2 regularization."
         # https://www.tensorflow.org/tutorials/keras/overfit_and_underfit
         # TODO [PAPER] use a weight decay of 0.0001
         #weight_decay = tf.keras.regularizers.l2(0)
-
-        # TODO bias_initializer, kernel_initializer, kernel_regularizer
         
         self.model = tf.keras.Sequential([
             # conv1
@@ -171,7 +179,8 @@ class Resnet(tf.keras.Model):
             #                  3 = number of channels (input layers)
             #                  1 = bias
             #                 64 = number of output layers
-            Conv2D(64, (7, 7),  strides=2, input_shape=(224, 224, 3), padding='same'),
+            Conv2D(64, (7, 7),  strides=2, input_shape=(224, 224, 3), padding='same', 
+                   kernel_initializer=Weights.init(), bias_initializer='zeros'),
             BatchNormalization(),
             ReLU(),
 
@@ -204,7 +213,8 @@ class Resnet(tf.keras.Model):
             GlobalAveragePooling2D(),
 
             Flatten(),            
-            Dense(1000, activation='softmax') # 1000 categories
+            Dense(1000, activation='softmax', 
+                  kernel_initializer=Weights.init(), bias_initializer='zeros') # 1000 categories
         ])
 
     def call(self, input_tensor, training=False):
@@ -272,17 +282,21 @@ class Resnet(tf.keras.Model):
 
 def main():
     gpu.configure_gpu()
-
+    
+    # TODO Default should be to resume training.For new train change version & start_date
+    # TODO Maybe version and start_date should be a single variable?
     version='v2.0'
-    initial_epoch=0
-    learning_rate=0.03
+    start_date="2020-May-05"
+    initial_epoch=27 # initial_epoch will be 1 more than this
+    learning_rate=0.003
+    resume_training=True
+
 
     path = Resnet._get_checkpoint_folder(version)
-    r = Resnet(version=version, start_date="2020-May-05")
+    r = Resnet(version=version, start_date=start_date)
     r.compile(learning_rate=learning_rate)
     r.build(input_shape=(None, 224, 224, 3))
-    
-    resume_training=False
+        
     if resume_training:
         r.load_weights(version, epoch=initial_epoch, learning_rate=learning_rate)
     
@@ -298,8 +312,8 @@ def main():
     
     history = r.fit(x=train_augmented_gen,
                          validation_data=validation_gen,
-                         initial_epoch = initial_epoch,
-                         dataset_iterations = 20,                   
+                         initial_epoch = initial_epoch, 
+                         dataset_iterations = 50,                   
                          # steps_per_epoch = total number of steps (batches of samples) before declaring one epoch finished and starting the next epoch
                          steps_per_epoch=train_data_size / batch_size)    
 
