@@ -160,11 +160,10 @@ class ResnetIdentityBlock(tf.keras.Model):
         return tf.nn.relu(x)
 
 class Resnet(tf.keras.Model):
-    def __init__(self, version, start_date):
+    def __init__(self, version):
         super(Resnet, self).__init__(name='')
     
         self.version = version
-        self.start_date = start_date
 
         # "L2 regularization is also called weight decay in the context of neural networks. 
         # Don't let the different name confuse you: weight decay is mathematically the exact same as L2 regularization."
@@ -263,7 +262,7 @@ class Resnet(tf.keras.Model):
                                                  save_weights_only=True, verbose=1)  #save_best_only=False
         
         # Callback that logs the progress so you can visualize it in Tensorboard.
-        log_dir = logs1 + '/fit/' + self.version + '_' + self.start_date
+        log_dir = logs1 + '/fit/' + self.version
         tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1)
 
         print("Starting the training")
@@ -283,17 +282,14 @@ class Resnet(tf.keras.Model):
 def main():
     gpu.configure_gpu()
     
-    # TODO Default should be to resume training.For new train change version & start_date
-    # TODO Maybe version and start_date should be a single variable?
-    version='v2.0'
-    start_date="2020-May-05"
-    initial_epoch=27 # initial_epoch will be 1 more than this
-    learning_rate=0.003
-    resume_training=True
+    version='v2.0-2020-June-16'
+    initial_epoch=0 # initial_epoch will be 1 more than this
+    learning_rate=0.01
+    resume_training=False
 
 
     path = Resnet._get_checkpoint_folder(version)
-    r = Resnet(version=version, start_date=start_date)
+    r = Resnet(version=version)
     r.compile(learning_rate=learning_rate)
     r.build(input_shape=(None, 224, 224, 3))
         
@@ -312,10 +308,10 @@ def main():
     
     history = r.fit(x=train_augmented_gen,
                          validation_data=validation_gen,
-                         initial_epoch = initial_epoch, 
-                         dataset_iterations = 50,                   
+                         initial_epoch=initial_epoch, 
+                         dataset_iterations=50,                   
                          # steps_per_epoch = total number of steps (batches of samples) before declaring one epoch finished and starting the next epoch
-                         steps_per_epoch=train_data_size / batch_size)    
+                         steps_per_epoch=train_data_size/batch_size)    
 
 if __name__ == '__main__':
     main()
