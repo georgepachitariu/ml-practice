@@ -282,18 +282,20 @@ class Resnet(tf.keras.Model):
 def main():
     gpu.configure_gpu()
     
-    version='v2.0-2020-June-16'
-    initial_epoch=0 # initial_epoch will be 1 more than this
-    learning_rate=0.01
-    resume_training=False
+    version = 'v2.0-2020-June-16'
+    initial_epoch = 0 # initial_epoch will be 1 more than this
+    learning_rate = 0.01
 
 
     path = Resnet._get_checkpoint_folder(version)
     r = Resnet(version=version)
     r.compile(learning_rate=learning_rate)
     r.build(input_shape=(None, 224, 224, 3))
-        
-    if resume_training:
+    
+    # By default it will resume training by loading the weights from the previous completed epoch (checkpoint).
+    # It can only overwrite when initial_epoch=0. But in this case it's preffered to change the version and 
+    #   start a complete new training.
+    if initial_epoch > 0:        
         r.load_weights(version, epoch=initial_epoch, learning_rate=learning_rate)
     
     print(r.model.summary())
