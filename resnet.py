@@ -2,7 +2,7 @@ from data import Imagenet2012
 import gpu
 import tensorflow as tf
 from tensorflow.python.keras.engine import data_adapter
-from tensorflow.keras.layers import Conv2D, BatchNormalization, AveragePooling2D, GlobalAveragePooling2D, \
+from tensorflow.keras.layers import Conv2D, BatchNormalization, MaxPool2D, GlobalAveragePooling2D, \
     Flatten, Dropout, Dense, ReLU, Lambda, Softmax
 from tensorflow.dtypes import cast
 from datetime import datetime
@@ -70,12 +70,12 @@ class Preprocessing:
         return tf.stack(s_images), tf.stack(s_labels)
     
     @staticmethod
-    def create_generator(ds, for_training, batch_size, buffer_size = 64):
+    def create_generator(ds, for_training, batch_size, buffer_size = 10000):
         auto=tf.data.experimental.AUTOTUNE
         
         if for_training:
-            ds = ds.repeat()
             ds = ds.shuffle(buffer_size=buffer_size)
+            ds = ds.repeat()
 
         # Normalize & change the data type: change values range from [0, 255] to [-0.5, 0.5]
         ds = ds.map(lambda r: (tf.dtypes.cast(r['image']/255-0.5, dtype=tf.float32), 
@@ -90,14 +90,14 @@ class Preprocessing:
             # because later I do Tensor segmentation based on the labels in the current batch.
             # https://www.tensorflow.org/api_docs/python/tf/math#Segmentations
             ds = ds.map(Preprocessing._prepare_testing_10crops, num_parallel_calls=auto)
-            ds = ds.unbatch().batch(30) # Batch them in a multiple of 10 so that more of them fit the GPU
+            ds = ds.unbatch().batch(60) # Batch them in a multiple of 10 so that more of them fit the GPU
 
         # Prefetching overlaps the preprocessing and model execution of a training step. 
         # While the model is executing training step s, the input pipeline is reading the data for step s+1. 
         # Doing so reduces the step time to the maximum (as opposed to the sum) of the training and the time it takes to extract the data.
         # https://www.tensorflow.org/guide/data_performance
         # TODO This should speed up the performance, but It doesn't fit the memory right now
-        #ds = ds.prefetch(buffer_size=1) # using "auto" ends up with OOM during validation step 
+        ds = ds.prefetch(buffer_size=auto) #1) # using "auto" ends up with OOM during validation step 
         return ds
     
     @staticmethod
@@ -117,47 +117,53 @@ class Weights:
 
 Weights.init
 class ResnetIdentityBlock(tf.keras.Model):
-    def __init__(self, input_filters, shortcuts_across_2_sizes=False, kernel_size=(3, 3)):
-        super(ResnetIdentityBlock, self).__init__(name='')
+    def __init__(self, input_filters, name, first_conv_stride=1, shortcuts_across_2_sizes=False):
+        super(ResnetIdentityBlock, self).__init__(name=name)
 
         # [PAPER] The projection shortcut in Eqn.(2) is used to match dimensions (done by 1×1 convolutions). 
         # For both options, when the shortcuts go across feature maps of two sizes, they are performed with a stride of 2.    
         if shortcuts_across_2_sizes:
-            strides = 2
-            self.shortcut_layer = Conv2D(input_filters*4, (1, 1), strides=strides, 
-                kernel_initializer=Weights.init(), bias_initializer='zeros') # size projection
+            self.shortcut_layer = tf.keras.Sequential([
+                Conv2D(input_filters*4, (1, 1), strides=first_conv_stride, kernel_initializer=Weights.init(),
+                    use_bias=False, name='res'+name+'_branch1'), # size projection
+                BatchNormalization(name='bn'+name+'_branch1')
+            ])
+
         else:
-            strides = 1
             self.shortcut_layer = Lambda(lambda x: x) # identity mapping
 
-        self.conv2a = Conv2D(input_filters, (1, 1), strides=strides,
-                             kernel_initializer=Weights.init(), bias_initializer='zeros')
-        self.bn2a = BatchNormalization()
+        self.conv2a = Conv2D(input_filters, (1, 1), strides=first_conv_stride, kernel_initializer=Weights.init(), 
+                             use_bias=False, name='res'+name+'_branch2a')
+        self.bn2a = BatchNormalization(name='bn'+name+'_branch2a')
+        self.relu2a = ReLU(name='res'+name+'_branch2a_relu')
 
-        self.conv2b = Conv2D(input_filters, kernel_size, padding='same',
-                             kernel_initializer=Weights.init(), bias_initializer='zeros')
-        self.bn2b = BatchNormalization()
+        self.conv2b = Conv2D(input_filters, (3, 3), strides=1, padding='same', 
+                             kernel_initializer=Weights.init(), use_bias=False)
+        self.bn2b = BatchNormalization(name='bn'+name+'_branch2b')
+        self.relu2b = ReLU(name='res'+name+'_branch2b_relu')
 
         # number of output filters = number of input filters * 4 
-        self.conv2c = Conv2D(input_filters * 4, (1, 1),
-                             kernel_initializer=Weights.init(), bias_initializer='zeros')
-        self.bn2c = BatchNormalization()
+        self.conv2c = Conv2D(input_filters * 4, (1, 1), strides=1,
+                             kernel_initializer=Weights.init(), use_bias=False)
+        self.bn2c = BatchNormalization(name='bn'+name+'_branch2c')
+
+        self.relu = ReLU(name='res'+name+'_relu')
 
 
     def call(self, input_tensor, training=False):
         x = self.conv2a(input_tensor)
         x = self.bn2a(x, training=training)
-        x = tf.nn.relu(x)
+        x = self.relu2a(x)
 
         x = self.conv2b(x)
         x = self.bn2b(x, training=training)
-        x = tf.nn.relu(x)
+        x = self.relu2b(x)
 
         x = self.conv2c(x)
         x = self.bn2c(x, training=training)
 
         x += self.shortcut_layer(input_tensor)
-        return tf.nn.relu(x)
+        return self.relu(x)
 
 class Resnet(tf.keras.Model):
     def __init__(self, version):
@@ -171,6 +177,9 @@ class Resnet(tf.keras.Model):
         # TODO [PAPER] use a weight decay of 0.0001
         #weight_decay = tf.keras.regularizers.l2(0)
         
+        # The naming of layers is consistent with the naming from here:
+        # http://ethereon.github.io/netscope/#/gist/db945b393d40bfa26006
+        
         self.model = tf.keras.Sequential([
             # conv1
             # Number of weights is (7×7×3+1)×64 = 9472 where:
@@ -179,41 +188,36 @@ class Resnet(tf.keras.Model):
             #                  1 = bias
             #                 64 = number of output layers
             Conv2D(64, (7, 7),  strides=2, input_shape=(224, 224, 3), padding='same', 
-                   kernel_initializer=Weights.init(), bias_initializer='zeros'),
-            BatchNormalization(),
-            ReLU(),
+                   kernel_initializer=Weights.init(), bias_initializer='zeros', name='conv1'),
+            BatchNormalization(name='bn_conv1'),
+            ReLU(name='conv1_relu'),
+            MaxPool2D(pool_size=(3, 3), strides=2, padding='same', name='pool1'),
 
-            # conv2_x
-            # TODO Number of weights for 1 block is
-            ResnetIdentityBlock(input_filters=64, shortcuts_across_2_sizes=True),
-            ResnetIdentityBlock(input_filters=64),
-            ResnetIdentityBlock(input_filters=64),
+            ResnetIdentityBlock(input_filters=64, name='2a', first_conv_stride=1, shortcuts_across_2_sizes=True),
+            ResnetIdentityBlock(input_filters=64, name='2b'),
+            ResnetIdentityBlock(input_filters=64, name='2c'),
 
-            # conv3_x
-            ResnetIdentityBlock(input_filters=128, shortcuts_across_2_sizes=True),
-            ResnetIdentityBlock(input_filters=128),
-            ResnetIdentityBlock(input_filters=128),
-            ResnetIdentityBlock(input_filters=128),
+            ResnetIdentityBlock(input_filters=128, name='3a', first_conv_stride=2, shortcuts_across_2_sizes=True),
+            ResnetIdentityBlock(input_filters=128, name='3b'),
+            ResnetIdentityBlock(input_filters=128, name='3c'),
+            ResnetIdentityBlock(input_filters=128, name='3d'),
 
-            # conv4_x
-            ResnetIdentityBlock(input_filters=256, shortcuts_across_2_sizes=True),
-            ResnetIdentityBlock(input_filters=256),
-            ResnetIdentityBlock(input_filters=256),
+            ResnetIdentityBlock(input_filters=256, name='4a', first_conv_stride=2, shortcuts_across_2_sizes=True),
+            ResnetIdentityBlock(input_filters=256, name='4b'),
+            ResnetIdentityBlock(input_filters=256, name='4c'),
+            ResnetIdentityBlock(input_filters=256, name='4d'),
+            ResnetIdentityBlock(input_filters=256, name='4e'),
+            ResnetIdentityBlock(input_filters=256, name='4f'),
 
-            ResnetIdentityBlock(input_filters=256),
-            ResnetIdentityBlock(input_filters=256),
-            ResnetIdentityBlock(input_filters=256),
+            ResnetIdentityBlock(input_filters=512, name='5a', first_conv_stride=2, shortcuts_across_2_sizes=True),
+            ResnetIdentityBlock(input_filters=512, name='5b'),
+            ResnetIdentityBlock(input_filters=512, name='5c'),
 
-            # conv5_x
-            ResnetIdentityBlock(input_filters=512, shortcuts_across_2_sizes=True),
-            ResnetIdentityBlock(input_filters=512),
-            ResnetIdentityBlock(input_filters=512),
-
-            GlobalAveragePooling2D(),
+            GlobalAveragePooling2D(name='pool5'),
 
             Flatten(),            
-            Dense(1000, activation='softmax', 
-                  kernel_initializer=Weights.init(), bias_initializer='zeros') # 1000 categories
+            Dense(1000, activation='softmax', kernel_initializer=Weights.init(), 
+                  bias_initializer='zeros', name='fc1000') # 1000 categories
         ])
 
     def call(self, input_tensor, training=False):
@@ -263,7 +267,7 @@ class Resnet(tf.keras.Model):
         
         # Callback that logs the progress so you can visualize it in Tensorboard.
         log_dir = logs1 + '/fit/' + self.version
-        tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1)
+        tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1, profile_batch=2)
 
         print("Starting the training")
         return super().fit(x=x,
@@ -282,10 +286,12 @@ class Resnet(tf.keras.Model):
 def main():
     gpu.configure_gpu()
     
-    version = 'v2.0-2020-June-16'
-    initial_epoch = 0 # initial_epoch will be 1 more than this
-    learning_rate = 0.01
+    #version = 'v2.1-2020-June-24'
+    version = 'pretrained'
 
+    # TODO: Next 2 vars can be computed from the existing files on the disk
+    initial_epoch = 1 # initial_epoch will be 1 more than this
+    learning_rate = 1e-2
 
     path = Resnet._get_checkpoint_folder(version)
     r = Resnet(version=version)
@@ -295,14 +301,15 @@ def main():
     # By default it will resume training by loading the weights from the previous completed epoch (checkpoint).
     # It can only overwrite when initial_epoch=0. But in this case it's preffered to change the version and 
     #   start a complete new training.
-    if initial_epoch > 0:        
-        r.load_weights(version, epoch=initial_epoch, learning_rate=learning_rate)
+    #if initial_epoch > 0:        
+    #    r.load_weights(version, epoch=initial_epoch, learning_rate=learning_rate)
     
     print(r.model.summary())
+    return
 
-    batch_size=32
+    batch_size=64
     print("Creating the generators")
-    train_data_size, validation_data_size, train_data, validation_data = Imagenet2012.load_data(sample_fraction=1, only_one=False)
+    train_data_size, validation_data_size, train_data, validation_data = Imagenet2012.load_data(sample_fraction=0.003, only_one=False)
     train_augmented_gen = Preprocessing.create_generator(train_data, for_training=True, batch_size=batch_size)
     validation_gen = Preprocessing.create_generator(validation_data, for_training=False, 
                     batch_size=None # batch_size is treated differently during validations
@@ -320,6 +327,16 @@ if __name__ == '__main__':
 
 # Journal (Run log)
 
+# Pretrained:
+#       loss: 0.9174 - accuracy: 0.7747 - sparse_top_k_categorical_accuracy: 0.9223 - 
+#       val_loss: 1.0786 - val_accuracy: 0.7738 - val_sparse_top_k_categorical_accuracy: 0.9329
+
+# New record (full dataset):
+# Epoch 37/50
+# 8775s loss: 1.3503 - accuracy: 0.6819 - sparse_top_k_categorical_accuracy: 0.8658 - 
+#       val_loss: 1.4499 - val_accuracy: 0.7074 - val_sparse_top_k_categorical_accuracy: 0.8866 - lr: 1.0000e-07
+
+
 # New record (full dataset):
 # 27 epochs
 # 9134s 122ms/step - loss: 1.3702 - accuracy: 0.6784 - sparse_top_k_categorical_accuracy: 0.8632 - 
@@ -328,8 +345,3 @@ if __name__ == '__main__':
 
 # Train time: 120000 / 16 = 7500 GPU steps
 # Validation time: 15000 * 1 (10 crops) GPU steps 
-
-# New record:
-# sample_fraction=0.5: Epoch 15/20
-# 18750/18750 [==] - 4127s 220ms/step - loss: 1.0002 - accuracy: 0.7436 - sparse_top_k_categorical_accuracy: 0.9163 - 
-#                                   val_loss: 1.9326 - val_accuracy: 0.5734 - val_sparse_top_k_categorical_accuracy: 0.8046 - lr: 1.0000e-04
