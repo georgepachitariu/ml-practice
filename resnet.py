@@ -254,12 +254,10 @@ class Resnet(tf.keras.Model):
 
     @staticmethod
     def _get_checkpoint_folder(version) -> str:
-        return 'trained_models/resnet_' + version + "/{epoch:02d}_{lr:.7f}"
+        return 'trained_models/resnet_' + version + "/{epoch:02d}"
 
-    def fit(self, x, validation_data, dataset_iterations, initial_epoch, steps_per_epoch, logs1='./logs'):
-        # [PAPER]The learning rate starts from 0.1 and is divided by 10 when the error plateaus
-        # TODO [PAPER] and the models are trained for up to 60 × 10^4 iterations.\
-        reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.1, patience=1)
+    def fit(self, x, validation_data, dataset_iterations, initial_epoch, steps_per_epoch, lr_fn, logs1='./logs'):
+        learning_rate_scheduler = tf.keras.callbacks.LearningRateScheduler(lr_fn)
 
         # Callback that saves the model's weights: https://www.tensorflow.org/tutorials/keras/save_and_load
         checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(filepath=Resnet._get_checkpoint_folder(self.version),                                                  
@@ -275,41 +273,41 @@ class Resnet(tf.keras.Model):
                               initial_epoch = initial_epoch,
                               epochs = dataset_iterations,
                               steps_per_epoch = steps_per_epoch,
-                              callbacks=[reduce_lr, checkpoint_callback, tensorboard_callback]
+                              callbacks=[learning_rate_scheduler, checkpoint_callback, tensorboard_callback]
                               )
 
-    def load_weights(self, version, epoch, learning_rate):     
-        path = Resnet._get_checkpoint_folder(version).format(epoch=epoch, lr=learning_rate)
-        super().load_weights(path) # fail if folder doesn't exist
+    def load_weights(self, version, epoch):     
+        path = Resnet._get_checkpoint_folder(version).format(epoch=epoch)
+        super().load_weights(path) # fails if folder doesn't exist
         
 
 def main():
     gpu.configure_gpu()
     
-    #version = 'v2.1-2020-June-24'
-    version = 'pretrained'
-
-    # TODO: Next 2 vars can be computed from the existing files on the disk
-    initial_epoch = 1 # initial_epoch will be 1 more than this
-    learning_rate = 1e-2
+    version = 'v2.2-2020-June-26'
+    initial_epoch = 0 # initial_epoch will be 1 more than this
+        
+    def lr_fn(epoch):
+        if epoch < 30: return 0.1
+        elif epoch < 40: return 0.01
+        else: return 0.001
 
     path = Resnet._get_checkpoint_folder(version)
     r = Resnet(version=version)
-    r.compile(learning_rate=learning_rate)
+    r.compile()
     r.build(input_shape=(None, 224, 224, 3))
     
     # By default it will resume training by loading the weights from the previous completed epoch (checkpoint).
     # It can only overwrite when initial_epoch=0. But in this case it's preffered to change the version and 
     #   start a complete new training.
-    #if initial_epoch > 0:        
-    #    r.load_weights(version, epoch=initial_epoch, learning_rate=learning_rate)
+    if initial_epoch > 0:        
+        r.load_weights(version, epoch=initial_epoch)
     
     print(r.model.summary())
-    return
 
     batch_size=64
     print("Creating the generators")
-    train_data_size, validation_data_size, train_data, validation_data = Imagenet2012.load_data(sample_fraction=0.003, only_one=False)
+    train_data_size, validation_data_size, train_data, validation_data = Imagenet2012.load_data(sample_fraction=1, only_one=False)
     train_augmented_gen = Preprocessing.create_generator(train_data, for_training=True, batch_size=batch_size)
     validation_gen = Preprocessing.create_generator(validation_data, for_training=False, 
                     batch_size=None # batch_size is treated differently during validations
@@ -320,7 +318,8 @@ def main():
                          initial_epoch=initial_epoch, 
                          dataset_iterations=50,                   
                          # steps_per_epoch = total number of steps (batches of samples) before declaring one epoch finished and starting the next epoch
-                         steps_per_epoch=train_data_size/batch_size)    
+                         steps_per_epoch=train_data_size/batch_size,
+                         lr_fn=lr_fn)    
 
 if __name__ == '__main__':
     main()
