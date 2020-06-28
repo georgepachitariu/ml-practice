@@ -97,7 +97,7 @@ class Preprocessing:
         # Doing so reduces the step time to the maximum (as opposed to the sum) of the training and the time it takes to extract the data.
         # https://www.tensorflow.org/guide/data_performance
         # TODO This should speed up the performance, but It doesn't fit the memory right now
-        ds = ds.prefetch(buffer_size=auto) #1) # using "auto" ends up with OOM during validation step 
+        ds = ds.prefetch(buffer_size=1) # using "auto" ends up with OOM during validation step 
         return ds
     
     @staticmethod
@@ -252,15 +252,17 @@ class Resnet(tf.keras.Model):
             loss='sparse_categorical_crossentropy', 
             metrics=['accuracy', tf.keras.metrics.SparseTopKCategoricalAccuracy(k=5)])
 
-    @staticmethod
-    def _get_checkpoint_folder(version) -> str:
-        return 'trained_models/resnet_' + version + "/{epoch:02d}"
+    def get_checkpoint_folder(self) -> str:
+        return 'trained_models/resnet_' + self.version
+
+    def get_checkpoint_file(self) -> str:
+        return self.get_checkpoint_folder() + "/{epoch:02d}"
 
     def fit(self, x, validation_data, dataset_iterations, initial_epoch, steps_per_epoch, lr_fn, logs1='./logs'):
         learning_rate_scheduler = tf.keras.callbacks.LearningRateScheduler(lr_fn)
 
         # Callback that saves the model's weights: https://www.tensorflow.org/tutorials/keras/save_and_load
-        checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(filepath=Resnet._get_checkpoint_folder(self.version),                                                  
+        checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(filepath=self.get_checkpoint_file(),                                                  
                                                  save_weights_only=True, verbose=1)  #save_best_only=False
         
         # Callback that logs the progress so you can visualize it in Tensorboard.
@@ -276,33 +278,41 @@ class Resnet(tf.keras.Model):
                               callbacks=[learning_rate_scheduler, checkpoint_callback, tensorboard_callback]
                               )
 
-    def load_weights(self, version, epoch):     
-        path = Resnet._get_checkpoint_folder(version).format(epoch=epoch)
-        super().load_weights(path) # fails if folder doesn't exist
+    def get_latest_checkpoint(self):
+        f = self.get_checkpoint_folder()
+        weights_file = tf.train.latest_checkpoint(f)
+        epoch = int(weights_file.split('/')[-1])
+        return weights_file, epoch
+
         
 
 def main():
     gpu.configure_gpu()
     
     version = 'v2.2-2020-June-26'
+    # TODO pass it as parameter? 
     initial_epoch = 0 # initial_epoch will be 1 more than this
+    resume_training = True
         
     def lr_fn(epoch):
         if epoch < 30: return 0.1
         elif epoch < 40: return 0.01
         else: return 0.001
 
-    path = Resnet._get_checkpoint_folder(version)
     r = Resnet(version=version)
     r.compile()
     r.build(input_shape=(None, 224, 224, 3))
     
     # By default it will resume training by loading the weights from the previous completed epoch (checkpoint).
-    # It can only overwrite when initial_epoch=0. But in this case it's preffered to change the version and 
-    #   start a complete new training.
-    if initial_epoch > 0:        
-        r.load_weights(version, epoch=initial_epoch)
-    
+    if resume_training:
+        weights_file, initial_epoch = r.get_latest_checkpoint()
+        r.load_weights(weights_file)
+    elif initial_epoch == 0:
+        pass # this is the start of training so there are no files.
+    else:
+        weights_file = r.get_checkpoint_file().format(epoch=initial_epoch)
+        r.load_weights(weights_file)
+     
     print(r.model.summary())
 
     batch_size=64
