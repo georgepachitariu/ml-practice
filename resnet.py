@@ -291,11 +291,13 @@ def main():
     
     version = 'v2.2-2020-June-26'
     # TODO pass it as parameter? 
-    initial_epoch = 0 # initial_epoch will be 1 more than this
-    resume_training = True
+    initial_epoch = 25 # initial_epoch will be 1 more than this
+    resume_training = False
         
     def lr_fn(epoch):
-        if epoch < 30: return 0.1
+        # This is manually tuned. I let it run more to see where the validation error plateaus, 
+        # and then came back to pick the right epoch to switch to a smaller leaning rate.
+        if epoch <= 25: return 0.1
         elif epoch < 40: return 0.01
         else: return 0.001
 
