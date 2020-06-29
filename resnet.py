@@ -295,10 +295,10 @@ def main():
     resume_training = False
         
     def lr_fn(epoch):
-        # This is manually tuned. I let it run more to see where the validation error plateaus, 
+        # This is manually tuned. I let it run more to see where the training error plateaus, 
         # and then came back to pick the right epoch to switch to a smaller leaning rate.
-        if epoch <= 25: return 0.1
-        elif epoch < 40: return 0.01
+        if epoch < 35: return 0.1
+        elif epoch < 50: return 0.01
         else: return 0.001
 
     r = Resnet(version=version)
