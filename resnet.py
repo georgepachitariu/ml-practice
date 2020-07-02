@@ -48,18 +48,19 @@ class Preprocessing:
 
     @staticmethod
     def _prepare_testing_10crops(image: tf.Tensor, label: tf.Tensor) -> (tf.Tensor, tf.Tensor):
-        image = Preprocessing.resize_same_ratio(image, new_size=368)
+        image = Preprocessing.resize_same_ratio(image, new_size=368) 
         height = tf.shape(image)[0] 
         width = tf.shape(image)[1]
 
         s_images = []
         s_labels = []
         for im in [image, tf.image.flip_left_right(image)]:
-            for offset_height, offset_width in [[0, 0],
-                                            [0, width-224],
-                                            [height-224, width-224],
-                                            [height-224, 0],
-                                            [height/2-224/2, width/2-224/2]
+            # The ten crops are the left, upper, right, bottom & center (and their mirrors)
+            for offset_height, offset_width in [[height/2-112, 0], # left
+                                            [0, width/2-112], # upper
+                                            [height/2-112, width-224], # right
+                                            [height-224, width/2-112], # bottom
+                                            [height/2-112, width/2-112] # center
                                             ]:
                 new_image_crop = tf.image.crop_to_bounding_box(im, offset_height=cast(offset_height, tf.int32), 
                                                        offset_width=cast(offset_width, tf.int32), 
@@ -292,7 +293,7 @@ def main():
     version = 'v2.2-2020-June-26'
     # TODO pass it as parameter? 
     initial_epoch = 25 # initial_epoch will be 1 more than this
-    resume_training = False
+    resume_training = True
         
     def lr_fn(epoch):
         # This is manually tuned. I let it run more to see where the training error plateaus, 
@@ -328,10 +329,11 @@ def main():
     history = r.fit(x=train_augmented_gen,
                          validation_data=validation_gen,
                          initial_epoch=initial_epoch, 
-                         dataset_iterations=50,                   
+                         dataset_iterations=65,                   
                          # steps_per_epoch = total number of steps (batches of samples) before declaring one epoch finished and starting the next epoch
                          steps_per_epoch=train_data_size/batch_size,
                          lr_fn=lr_fn)    
+    
 
 if __name__ == '__main__':
     main()
@@ -346,13 +348,3 @@ if __name__ == '__main__':
 # Epoch 37/50
 # 8775s loss: 1.3503 - accuracy: 0.6819 - sparse_top_k_categorical_accuracy: 0.8658 - 
 #       val_loss: 1.4499 - val_accuracy: 0.7074 - val_sparse_top_k_categorical_accuracy: 0.8866 - lr: 1.0000e-07
-
-
-# New record (full dataset):
-# 27 epochs
-# 9134s 122ms/step - loss: 1.3702 - accuracy: 0.6784 - sparse_top_k_categorical_accuracy: 0.8632 - 
-#                val_loss: 1.4805 - val_accuracy: 0.6994 - val_sparse_top_k_categorical_accuracy: 0.8809 - lr: 1.0000e-05
-
-
-# Train time: 120000 / 16 = 7500 GPU steps
-# Validation time: 15000 * 1 (10 crops) GPU steps 
