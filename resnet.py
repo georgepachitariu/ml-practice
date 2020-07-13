@@ -290,16 +290,16 @@ class Resnet(tf.keras.Model):
 def main():
     gpu.configure_gpu()
     
-    version = 'v2.2-2020-June-26'
+    version = 'v2.2-2020-July-09'
     # TODO pass it as parameter? 
-    initial_epoch = 25 # initial_epoch will be 1 more than this
+    initial_epoch = 34 # initial_epoch will be 1 more than this
     resume_training = True
         
     def lr_fn(epoch):
         # This is manually tuned. I let it run more to see where the training error plateaus, 
         # and then came back to pick the right epoch to switch to a smaller leaning rate.
-        if epoch < 35: return 0.1
-        elif epoch < 50: return 0.01
+        if epoch < 50: return 0.1
+        elif epoch < 70: return 0.01
         else: return 0.001
 
     r = Resnet(version=version)
@@ -329,16 +329,24 @@ def main():
     history = r.fit(x=train_augmented_gen,
                          validation_data=validation_gen,
                          initial_epoch=initial_epoch, 
-                         dataset_iterations=65,                   
+                         dataset_iterations=80,                   
                          # steps_per_epoch = total number of steps (batches of samples) before declaring one epoch finished and starting the next epoch
                          steps_per_epoch=train_data_size/batch_size,
                          lr_fn=lr_fn)    
     
-
 if __name__ == '__main__':
     main()
 
 # Journal (Run log)
+# Better training:
+# Epoch 73/80
+#       loss: 0.7877 - accuracy: 0.8024 - sparse_top_k_categorical_accuracy: 0.9327 - 
+#       val_loss: 1.2672 - val_accuracy: 0.7195 - val_sparse_top_k_categorical_accuracy: 0.8930
+
+# New record
+# Epoch 75/80
+#       loss: 0.9106 - accuracy: 0.7748 - sparse_top_k_categorical_accuracy: 0.9192 - 
+#       val_loss: 1.2568 - val_accuracy: 0.7201 - val_sparse_top_k_categorical_accuracy: 0.8947
 
 # Pretrained:
 #       loss: 0.9174 - accuracy: 0.7747 - sparse_top_k_categorical_accuracy: 0.9223 - 
