@@ -40,10 +40,12 @@ class Preprocessing:
     def _augment_train(image: tf.Tensor, label: tf.Tensor) -> (tf.Tensor, tf.Tensor):        
         image = Preprocessing.resize_same_ratio(image)  
         image = tf.image.random_flip_left_right(image)
-
         image = tf.image.random_crop(image, size = (224, 224, 3))        
-        image = tf.image.random_brightness(image, max_delta=0.1)
-        image = tf.image.random_contrast(image, lower=0.9, upper=1.1)        
+
+        image = tf.image.random_brightness(image, max_delta=0.5)
+        image = tf.image.random_contrast(image, lower=0.5, upper=1.5)        
+        image = tf.image.random_saturation(image, lower=0.5, upper=1.5)
+
         return image, label   
 
     @staticmethod
@@ -100,13 +102,6 @@ class Preprocessing:
         # TODO This should speed up the performance, but It doesn't fit the memory right now
         ds = ds.prefetch(buffer_size=1) # using "auto" ends up with OOM during validation step 
         return ds
-    
-    @staticmethod
-    # this method is only used to reverse normalisation so we can display the images
-    def denormalize(image: tf.Tensor, label: tf.Tensor) -> tf.Tensor:
-        image = tf.clip_by_value(image, -0.5, 0.5)
-        return (image + 0.5) * 255, label
-
 
 class Weights:
     @staticmethod
@@ -116,7 +111,6 @@ class Weights:
         # "A proper initialization method should avoid reducing or magnifying the magnitudes of input signals exponentially."
         return tf.keras.initializers.VarianceScaling(scale=2.0, mode='fan_in', distribution='truncated_normal')
 
-Weights.init
 class ResnetIdentityBlock(tf.keras.Model):
     def __init__(self, input_filters, name, first_conv_stride=1, shortcuts_across_2_sizes=False):
         super(ResnetIdentityBlock, self).__init__(name=name)
@@ -290,10 +284,9 @@ class Resnet(tf.keras.Model):
 def main():
     gpu.configure_gpu()
     
-    version = 'v2.2-2020-July-09'
-    # TODO pass it as parameter? 
-    initial_epoch = 34 # initial_epoch will be 1 more than this
-    resume_training = True
+    version = 'v2.3-2020-July-14'
+    initial_epoch = 0 # initial_epoch will be 1 more than this
+    resume_training = False
         
     def lr_fn(epoch):
         # This is manually tuned. I let it run more to see where the training error plateaus, 
