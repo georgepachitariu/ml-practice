@@ -286,13 +286,13 @@ def main():
     
     version = 'v2.3-2020-July-14'
     initial_epoch = 0 # initial_epoch will be 1 more than this
-    resume_training = False
+    resume_training = True
         
     def lr_fn(epoch):
         # This is manually tuned. I let it run more to see where the training error plateaus, 
         # and then came back to pick the right epoch to switch to a smaller leaning rate.
-        if epoch < 50: return 0.1
-        elif epoch < 70: return 0.01
+        if epoch < 35: return 0.1
+        elif epoch < 45: return 0.01
         else: return 0.001
 
     r = Resnet(version=version)
