@@ -1,0 +1,12 @@
+language: python
+python:
+  - "3.7"
+#install:
+#  - pip install -r requirements.txt
+script:
+  - python -m unittest discover dataset "*_test.py"
+  - python -m unittest discover knearestneighbour "*_test.py"
+  - python -m unittest discover linearclassifier "*_test.py"
+  - python -m unittest discover neuralnetwork "*_test.py"
+  - python -m unittest discover supportvectormachine "*_test.py"
+
