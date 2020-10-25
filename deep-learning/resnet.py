@@ -293,13 +293,13 @@ def main():
     gpu.configure_gpu()
     
     version = 'v2.4-2020-July-26'
-    initial_epoch = 0 # initial_epoch will be 1 more than this
+    initial_epoch = 7 # initial_epoch will be 1 more than this
     resume_training = False
         
     def lr_fn(epoch):
         # This is manually tuned. I let it run more to see where the training error plateaus, 
         # and then came back to pick the right epoch to switch to a smaller leaning rate.
-        if epoch < 35: return 0.1
+        if epoch < 6: return 0.1
         elif epoch < 50: return 0.01
         else: return 0.001
 
