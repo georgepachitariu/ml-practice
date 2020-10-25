@@ -4,10 +4,10 @@ import pickle, urllib
 
 class Imagenet2012:
     @staticmethod
-    def load() -> (tf.data.Dataset, tf.data.Dataset):
+    def load(shuffle_files=True) -> (tf.data.Dataset, tf.data.Dataset):
         train_ds, validation_ds = tfds.load(name="imagenet2012", split=['train', 'validation'],
                                             data_dir='/home/gpachitariu/SSD/data',
-                                            shuffle_files=True)
+                                            shuffle_files=shuffle_files)
         
         Imagenet2012.test_assumptions_of_the_input(train_ds)
 
@@ -34,7 +34,7 @@ class Imagenet2012:
                                                   'd133d61a09d7e5a3b36b8c111a8dd5c4b5d560ee/imagenet1000_clsid_to_human.pkl') )
 
     @staticmethod
-    def load_data(sample_fraction=1, only_one = False):
+    def load_data(sample_fraction=1, only_one = False, shuffle_files=True):
         # http://www.image-net.org/challenges/LSVRC/2012/
         # number_categories = 1000 
         # 1.2 million train images
@@ -43,7 +43,7 @@ class Imagenet2012:
         total_validation_data_size = 50000
 
         print("Loading input dataset")
-        train_data, validation_data = Imagenet2012.load()
+        train_data, validation_data = Imagenet2012.load(shuffle_files=shuffle_files)
 
         train_data_size = int(sample_fraction * total_train_data_size)
         validation_data_size = int(sample_fraction * total_validation_data_size)
@@ -56,7 +56,7 @@ class Imagenet2012:
         print(f"A fraction of {sample_fraction} was selected from the total data")
         print(f"Number of examples in the Train dataset is {train_data_size} and in the Validation dataset is {validation_data_size}")    
 
-        train_data = train_data.take(train_data_size)
-        validation_data = validation_data.take(validation_data_size)
+        train_data_truncated = train_data.take(train_data_size)
+        validation_data_truncated = validation_data.take(validation_data_size)
 
-        return train_data_size, validation_data_size, train_data, validation_data
+        return train_data_size, validation_data_size, train_data_truncated, validation_data_truncated

@@ -42,9 +42,9 @@ class Preprocessing:
         image = tf.image.random_flip_left_right(image)
         image = tf.image.random_crop(image, size = (224, 224, 3))        
 
-        image = tf.image.random_brightness(image, max_delta=0.5)
-        image = tf.image.random_contrast(image, lower=0.5, upper=1.5)        
-        image = tf.image.random_saturation(image, lower=0.5, upper=1.5)
+        image = tf.image.random_brightness(image, max_delta=0.1)
+        image = tf.image.random_contrast(image, lower=0.9, upper=1.1)        
+        #image = tf.image.random_saturation(image, lower=0.9, upper=1.1)
 
         return image, label   
 
@@ -99,7 +99,6 @@ class Preprocessing:
         # While the model is executing training step s, the input pipeline is reading the data for step s+1. 
         # Doing so reduces the step time to the maximum (as opposed to the sum) of the training and the time it takes to extract the data.
         # https://www.tensorflow.org/guide/data_performance
-        # TODO This should speed up the performance, but It doesn't fit the memory right now
         ds = ds.prefetch(buffer_size=1) # using "auto" ends up with OOM during validation step 
         return ds
 
@@ -111,6 +110,13 @@ class Weights:
         # "A proper initialization method should avoid reducing or magnifying the magnitudes of input signals exponentially."
         return tf.keras.initializers.VarianceScaling(scale=2.0, mode='fan_in', distribution='truncated_normal')
 
+def weight_decay():
+    # "L2 regularization is also called weight decay in the context of neural networks. 
+    # Don't let the different name confuse you: weight decay is mathematically the exact same as L2 regularization."
+    # https://www.tensorflow.org/tutorials/keras/overfit_and_underfit
+    # [PAPER] use a weight decay of 0.0001
+    return tf.keras.regularizers.l2(0.0001)
+
 class ResnetIdentityBlock(tf.keras.Model):
     def __init__(self, input_filters, name, first_conv_stride=1, shortcuts_across_2_sizes=False):
         super(ResnetIdentityBlock, self).__init__(name=name)
@@ -119,27 +125,33 @@ class ResnetIdentityBlock(tf.keras.Model):
         # For both options, when the shortcuts go across feature maps of two sizes, they are performed with a stride of 2.    
         if shortcuts_across_2_sizes:
             self.shortcut_layer = tf.keras.Sequential([
-                Conv2D(input_filters*4, (1, 1), strides=first_conv_stride, kernel_initializer=Weights.init(),
+                Conv2D(input_filters*4, (1, 1), strides=first_conv_stride, 
+                    kernel_initializer=Weights.init(), kernel_regularizer=weight_decay(),
                     use_bias=False, name='res'+name+'_branch1'), # size projection
+
                 BatchNormalization(name='bn'+name+'_branch1')
             ])
 
         else:
             self.shortcut_layer = Lambda(lambda x: x) # identity mapping
 
-        self.conv2a = Conv2D(input_filters, (1, 1), strides=first_conv_stride, kernel_initializer=Weights.init(), 
-                             use_bias=False, name='res'+name+'_branch2a')
+        self.conv2a = Conv2D(input_filters, (1, 1), strides=first_conv_stride, 
+                             kernel_initializer=Weights.init(), kernel_regularizer=weight_decay(),
+                             use_bias=False, 
+                             name='res'+name+'_branch2a')
         self.bn2a = BatchNormalization(name='bn'+name+'_branch2a')
         self.relu2a = ReLU(name='res'+name+'_branch2a_relu')
 
         self.conv2b = Conv2D(input_filters, (3, 3), strides=1, padding='same', 
-                             kernel_initializer=Weights.init(), use_bias=False)
+                             kernel_initializer=Weights.init(), kernel_regularizer=weight_decay(),
+                             use_bias=False)
         self.bn2b = BatchNormalization(name='bn'+name+'_branch2b')
         self.relu2b = ReLU(name='res'+name+'_branch2b_relu')
 
         # number of output filters = number of input filters * 4 
         self.conv2c = Conv2D(input_filters * 4, (1, 1), strides=1,
-                             kernel_initializer=Weights.init(), use_bias=False)
+                             kernel_initializer=Weights.init(), kernel_regularizer=weight_decay(),
+                             use_bias=False)
         self.bn2c = BatchNormalization(name='bn'+name+'_branch2c')
 
         self.relu = ReLU(name='res'+name+'_relu')
@@ -165,12 +177,6 @@ class Resnet(tf.keras.Model):
         super(Resnet, self).__init__(name='')
     
         self.version = version
-
-        # "L2 regularization is also called weight decay in the context of neural networks. 
-        # Don't let the different name confuse you: weight decay is mathematically the exact same as L2 regularization."
-        # https://www.tensorflow.org/tutorials/keras/overfit_and_underfit
-        # TODO [PAPER] use a weight decay of 0.0001
-        #weight_decay = tf.keras.regularizers.l2(0)
         
         # The naming of layers is consistent with the naming from here:
         # http://ethereon.github.io/netscope/#/gist/db945b393d40bfa26006
@@ -183,7 +189,8 @@ class Resnet(tf.keras.Model):
             #                  1 = bias
             #                 64 = number of output layers
             Conv2D(64, (7, 7),  strides=2, input_shape=(224, 224, 3), padding='same', 
-                   kernel_initializer=Weights.init(), bias_initializer='zeros', name='conv1'),
+                   kernel_initializer=Weights.init(), kernel_regularizer=weight_decay(),
+                   bias_initializer='zeros', name='conv1'),
             BatchNormalization(name='bn_conv1'),
             ReLU(name='conv1_relu'),
             MaxPool2D(pool_size=(3, 3), strides=2, padding='same', name='pool1'),
@@ -211,7 +218,8 @@ class Resnet(tf.keras.Model):
             GlobalAveragePooling2D(name='pool5'),
 
             Flatten(),            
-            Dense(1000, activation='softmax', kernel_initializer=Weights.init(), 
+            Dense(1000, activation='softmax', 
+                  kernel_initializer=Weights.init(), kernel_regularizer=weight_decay(),
                   bias_initializer='zeros', name='fc1000') # 1000 categories
         ])
 
@@ -284,15 +292,15 @@ class Resnet(tf.keras.Model):
 def main():
     gpu.configure_gpu()
     
-    version = 'v2.3-2020-July-14'
-    initial_epoch = 0 # initial_epoch will be 1 more than this
+    version = 'v2.4-2020-July-26'
+    initial_epoch = 7 # initial_epoch will be 1 more than this
     resume_training = False
         
     def lr_fn(epoch):
         # This is manually tuned. I let it run more to see where the training error plateaus, 
         # and then came back to pick the right epoch to switch to a smaller leaning rate.
-        if epoch < 50: return 0.1
-        elif epoch < 70: return 0.01
+        if epoch < 6: return 0.1
+        elif epoch < 50: return 0.01
         else: return 0.001
 
     r = Resnet(version=version)
